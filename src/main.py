@@ -8,7 +8,19 @@ from dotenv import load_dotenv
 
 from .sec_ingestion.daily_index import get_filtered_filings
 from .sec_ingestion.downloader import fetch_and_clean
-from .database.db import init_db, insert_filings, update_filing_content
+from .database.db import (
+    init_db,
+    insert_filings,
+    update_filing_content,
+    upsert_companies,
+    enrich_filings_with_tickers,
+    enrich_filings_with_otc,
+)
+from .company_enrichment.sec_company_tickers import (
+    download_sec_company_tickers,
+    parse_sec_company_tickers,
+)
+from .otcmarkets.otc_screener_importer import import_otc_screener_csv
 
 load_dotenv()
 
@@ -47,32 +59,60 @@ def _parse_date(value: str) -> date:
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Download SEC EDGAR filings for a given date, filter by form type, "
-            "and store metadata (and optionally content) in a local SQLite database."
+            "SEC EDGAR filing pipeline. Download and store daily filings, import "
+            "the company/ticker mapping, and enrich stored filings with tickers."
         )
     )
     parser.add_argument(
         "--date",
-        required=True,
         type=_parse_date,
         metavar="YYYY-MM-DD",
-        help="Date to fetch filings for (e.g. 2024-05-15)",
+        default=None,
+        help="Fetch and store filings for this date (e.g. 2024-05-15)",
     )
     parser.add_argument(
         "--download-content",
         action="store_true",
-        help="Also download and clean the text content of each filing",
+        help="Also download and clean the text content of each filing (requires --date)",
+    )
+    parser.add_argument(
+        "--import-sec-company-tickers",
+        action="store_true",
+        help="Download the SEC company/ticker mapping and store it in the companies table",
+    )
+    parser.add_argument(
+        "--enrich-filings",
+        action="store_true",
+        help="Update filings.ticker from the companies table",
+    )
+    parser.add_argument(
+        "--import-otc-screener-csv",
+        metavar="PATH",
+        default=None,
+        help="Import an OTC Markets Stock Screener CSV into the otc_securities table",
+    )
+    parser.add_argument(
+        "--enrich-filings-with-otc",
+        action="store_true",
+        help="Update filings.otc_tier, sec_type, country from otc_securities via ticker match",
     )
     return parser
 
 
-def main() -> None:
-    args = _build_arg_parser().parse_args()
-    user_agent = _get_user_agent()
+def _run_import_tickers(user_agent: str) -> None:
+    logger.info("Importing SEC company/ticker mapping...")
+    try:
+        data = download_sec_company_tickers(user_agent)
+    except Exception as exc:
+        logger.error(f"Failed to download company tickers: {exc}")
+        sys.exit(1)
+    companies = parse_sec_company_tickers(data)
+    count = upsert_companies(companies)
+    logger.info(f"  {count} company records stored in 'companies' table.")
 
+
+def _run_daily_pipeline(args, user_agent: str) -> None:
     logger.info(f"Starting pipeline for date: {args.date}")
-    init_db()
-
     try:
         filings = get_filtered_filings(args.date, user_agent)
     except FileNotFoundError as exc:
@@ -112,7 +152,62 @@ def main() -> None:
         if failed:
             logger.warning(f"Content download finished with {failed}/{total} failures.")
 
-    logger.info("Pipeline complete.")
+
+def _run_enrich_filings() -> None:
+    logger.info("Enriching filings with tickers from companies table...")
+    enriched, missing = enrich_filings_with_tickers()
+    logger.info(f"  Enriched: {enriched} | No ticker match: {missing}")
+
+
+def _run_import_otc_csv(csv_path: str) -> None:
+    try:
+        inserted, updated = import_otc_screener_csv(csv_path)
+        logger.info(f"  OTC securities: {inserted} inserted, {updated} updated.")
+    except FileNotFoundError as exc:
+        logger.error(str(exc))
+
+
+def _run_enrich_filings_with_otc() -> None:
+    logger.info("Enriching filings with OTC data (tier, sec_type, country)...")
+    enriched, no_match = enrich_filings_with_otc()
+    logger.info(f"  Enriched: {enriched} | No OTC match: {no_match}")
+
+
+def main() -> None:
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+
+    if not any([
+        args.date,
+        args.import_sec_company_tickers,
+        args.enrich_filings,
+        args.import_otc_screener_csv,
+        args.enrich_filings_with_otc,
+    ]):
+        parser.error(
+            "Specify at least one action: --date, --import-sec-company-tickers, "
+            "--enrich-filings, --import-otc-screener-csv, or --enrich-filings-with-otc."
+        )
+
+    user_agent = _get_user_agent()
+    init_db()
+
+    if args.import_sec_company_tickers:
+        _run_import_tickers(user_agent)
+
+    if args.date:
+        _run_daily_pipeline(args, user_agent)
+
+    if args.enrich_filings:
+        _run_enrich_filings()
+
+    if args.import_otc_screener_csv:
+        _run_import_otc_csv(args.import_otc_screener_csv)
+
+    if args.enrich_filings_with_otc:
+        _run_enrich_filings_with_otc()
+
+    logger.info("Done.")
 
 
 if __name__ == "__main__":
