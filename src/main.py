@@ -1,17 +1,12 @@
 import argparse
 import logging
-import os
 import sys
 from datetime import date, datetime
 
 from dotenv import load_dotenv
 
-from .sec_ingestion.daily_index import get_filtered_filings
-from .sec_ingestion.downloader import fetch_and_clean
 from .database.db import (
     init_db,
-    insert_filings,
-    update_filing_content,
     upsert_companies,
     enrich_filings_with_tickers,
     enrich_filings_with_otc,
@@ -21,6 +16,8 @@ from .company_enrichment.sec_company_tickers import (
     parse_sec_company_tickers,
 )
 from .otcmarkets.otc_screener_importer import import_otc_screener_csv
+from .llm_analysis.client import LLMConfigError
+from .pipeline import get_user_agent, run_daily_pipeline, run_snapshot_pipeline, run_llm_pipeline
 
 load_dotenv()
 
@@ -30,21 +27,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
-
-_PLACEHOLDER_AGENT = "OTCFilingIntelligence contact@example.com"
-
-
-def _get_user_agent() -> str:
-    agent = os.getenv("SEC_USER_AGENT", "").strip()
-    if not agent:
-        print(
-            "[WARNING] SEC_USER_AGENT is not set. Using a placeholder User-Agent.\n"
-            "          Please set it in a .env file or your environment:\n"
-            f"          SEC_USER_AGENT=\"YourName youremail@example.com\"\n"
-            "          The SEC requires an identifiable User-Agent for all requests.\n"
-        )
-        return _PLACEHOLDER_AGENT
-    return agent
 
 
 def _parse_date(value: str) -> date:
@@ -96,6 +78,23 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Update filings.otc_tier, sec_type, country from otc_securities via ticker match",
     )
+    parser.add_argument(
+        "--build-snapshots",
+        action="store_true",
+        help="Build Document Intelligence snapshots for filings with clean_text",
+    )
+    parser.add_argument(
+        "--llm-first-pass",
+        action="store_true",
+        help="Run the LLM first pass over pending EVENT filings (requires LLM_API_KEY, "
+        "LLM_BASE_URL, LLM_MODEL)",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max number of filings to process with --llm-first-pass (default: no limit)",
+    )
     return parser
 
 
@@ -111,10 +110,34 @@ def _run_import_tickers(user_agent: str) -> None:
     logger.info(f"  {count} company records stored in 'companies' table.")
 
 
+def _daily_pipeline_cli_progress(data: dict) -> None:
+    """Reproduces the log lines _run_daily_pipeline used to print inline,
+    now driven by pipeline.run_daily_pipeline's on_progress checkpoints so
+    the CLI output stays in the same order as before (fetch -> store ->
+    per-item download), even though the loop itself now lives in pipeline.py.
+    """
+    stage = data["stage"]
+    if stage == "index" and data["total_found"] > 0:
+        logger.info(f"Storing {data['total_found']} filings in the database...")
+    elif stage == "store":
+        logger.info(f"  Inserted: {data['inserted']} | Already existed: {data['already_existed']}")
+    elif stage == "content":
+        if data["done"] == 1:
+            logger.info("Downloading filing contents (this may take a while)...")
+        logger.info(f"  [{data['done']}/{data['total']}] {data['label']}")
+        if not data["ok"]:
+            logger.error(f"    {data['error']}")
+
+
 def _run_daily_pipeline(args, user_agent: str) -> None:
     logger.info(f"Starting pipeline for date: {args.date}")
     try:
-        filings = get_filtered_filings(args.date, user_agent)
+        result = run_daily_pipeline(
+            args.date,
+            user_agent,
+            download_content=args.download_content,
+            on_progress=_daily_pipeline_cli_progress,
+        )
     except FileNotFoundError as exc:
         logger.error(str(exc))
         sys.exit(1)
@@ -122,35 +145,14 @@ def _run_daily_pipeline(args, user_agent: str) -> None:
         logger.error(f"Unexpected error while fetching the daily index: {exc}")
         sys.exit(1)
 
-    if not filings:
+    if result.total_found == 0:
         logger.info("No filings matched the form filter for this date. Nothing to store.")
         return
 
-    logger.info(f"Storing {len(filings)} filings in the database...")
-    inserted, skipped = insert_filings(filings)
-    logger.info(f"  Inserted: {inserted} | Already existed: {skipped}")
-
-    if args.download_content:
-        logger.info("Downloading filing contents (this may take a while)...")
-        total = len(filings)
-        failed = 0
-        for idx, filing in enumerate(filings, start=1):
-            logger.info(
-                f"  [{idx}/{total}] {filing.form_type} — {filing.company_name}"
-            )
-            try:
-                raw, cleaned = fetch_and_clean(filing.filing_url, user_agent)
-            except Exception as exc:
-                logger.error(f"    Unexpected error for {filing.filing_url}: {exc}")
-                failed += 1
-                continue
-            if raw is not None:
-                update_filing_content(filing.filename, raw, cleaned or "")
-            else:
-                logger.warning(f"    Skipped (download failed): {filing.filing_url}")
-                failed += 1
-        if failed:
-            logger.warning(f"Content download finished with {failed}/{total} failures.")
+    if args.download_content and result.content_failed:
+        logger.warning(
+            f"Content download finished with {result.content_failed}/{result.total_found} failures."
+        )
 
 
 def _run_enrich_filings() -> None:
@@ -173,6 +175,28 @@ def _run_enrich_filings_with_otc() -> None:
     logger.info(f"  Enriched: {enriched} | No OTC match: {no_match}")
 
 
+def _run_build_snapshots() -> None:
+    logger.info("Building Document Intelligence snapshots...")
+    result = run_snapshot_pipeline()
+    if result.pending == 0:
+        logger.info("  No filings pending a snapshot.")
+        return
+    skipped = result.pending - result.built - len(result.errors)
+    logger.info(f"  Snapshots built: {result.built} | Skipped (already existed): {skipped}")
+    if result.errors:
+        logger.warning(f"  {len(result.errors)} filing(s) failed during snapshot generation.")
+
+
+def _run_llm_first_pass(limit) -> None:
+    logger.info("Running LLM first pass over pending EVENT filings...")
+    try:
+        result = run_llm_pipeline(limit=limit)
+    except LLMConfigError as exc:
+        logger.error(f"LLM first pass not run: {exc}")
+        sys.exit(1)
+    logger.info(f"  Processed: {result.processed} | Errors: {result.errors}")
+
+
 def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
@@ -183,13 +207,16 @@ def main() -> None:
         args.enrich_filings,
         args.import_otc_screener_csv,
         args.enrich_filings_with_otc,
+        args.build_snapshots,
+        args.llm_first_pass,
     ]):
         parser.error(
             "Specify at least one action: --date, --import-sec-company-tickers, "
-            "--enrich-filings, --import-otc-screener-csv, or --enrich-filings-with-otc."
+            "--enrich-filings, --import-otc-screener-csv, --enrich-filings-with-otc, "
+            "--build-snapshots, or --llm-first-pass."
         )
 
-    user_agent = _get_user_agent()
+    user_agent = get_user_agent()
     init_db()
 
     if args.import_sec_company_tickers:
@@ -206,6 +233,12 @@ def main() -> None:
 
     if args.enrich_filings_with_otc:
         _run_enrich_filings_with_otc()
+
+    if args.build_snapshots:
+        _run_build_snapshots()
+
+    if args.llm_first_pass:
+        _run_llm_first_pass(args.limit)
 
     logger.info("Done.")
 

@@ -1,13 +1,44 @@
 # otc-filing-intelligence
 
-A pipeline to download, filter, and store SEC EDGAR daily filings into a local SQLite database.
+A pipeline that detects corporate events in SEC EDGAR daily filings, structures them for
+analysis, and keeps supporting filings around as historical context — feeding a future
+LLM stage without paying to re-read every 10-K and 10-Q that goes by.
 
 ## What it does
 
 1. Downloads the SEC EDGAR daily index for a given date (`master.idx`)
-2. Parses and filters filings by relevant form types (8-K, 10-K, 10-Q, SC TO-I/T, SC 13D/G, DEF 14A, S-1)
+2. Routes every filing into **EVENT**, **CONTEXT**, or **IGNORED** (see
+   [Filing Routing](#filing-routing)) and drops IGNORED ones before they reach the database
 3. Stores filing metadata in `data/filings.db` (SQLite), skipping duplicates
 4. Optionally downloads and cleans the full text of each filing
+5. Runs [Document Intelligence](#document-intelligence) — but only on EVENT filings
+
+## Architecture
+
+```
+EVENT filings (8-K, tender offers, 13D, S-1, proxy contests...)
+    ↓
+Document Intelligence (structured extraction)
+    ↓
+LLM first pass (event classification + importance score)
+    ↓
+Deep research / full LLM report (future phase)
+
+CONTEXT filings (10-K, 10-Q, 20-F, 6-K)
+    ↓
+Simple storage (no extraction, no CPU spent)
+    ↓
+Retrieved on demand, as background for an EVENT filing
+
+IGNORED filings (everything else)
+    ↓
+Dropped at ingestion — never stored, never analyzed
+```
+
+The system isn't a general-purpose document analyzer — it's an event-detection pipeline.
+10-Ks and 10-Qs rarely contain an immediate corporate event; their value is as historical
+context *after* an event has already been detected elsewhere (an 8-K, a tender offer, a
+13D). Skipping them daily is what keeps processing time and future LLM cost down.
 
 ## Installation
 
@@ -84,6 +115,85 @@ python -m src.main --date 2024-05-15
 python -m src.main --enrich-filings-with-otc
 ```
 
+### Filing Routing
+
+Every filing is classified into exactly one `filing_category` the moment it's fetched
+(and automatically backfilled for existing rows on `init_db`):
+
+| Category  | Form types                                                                                          | What happens to it |
+|-----------|------------------------------------------------------------------------------------------------------|---------------------|
+| `EVENT`   | 8-K, 8-K/A, SC TO-I, SC TO-T, SC TO-C, SC 13D, SC 13D/A, SC 13E3, S-1, S-1/A, 424B3, 424B5, DEF 14A, DEFM14A, PREM14A | Fully analyzed by Document Intelligence, later sent to an LLM |
+| `CONTEXT` | 10-K, 10-Q, 20-F, 6-K                                                                                 | Stored only — retrieved on demand as background for an EVENT filing |
+| `IGNORED` | Everything else                                                                                       | Dropped before it reaches the database |
+
+The classification logic lives in one place: `src/filing_routing/routing.py`,
+`get_filing_category(form_type)`. Both the ingestion filter (`daily_index.py`) and the
+snapshot builder read from this single source of truth — no duplicated form-type lists.
+
+### Document Intelligence
+
+Transforms the raw `clean_text` of an **EVENT filing** into a structured, objective
+**snapshot** — item numbers, money amounts, percentages, dates, agreements, keywords,
+companies, and people mentioned in the document. CONTEXT and IGNORED filings never reach
+this phase — no extractors run on them, no CPU is spent on them.
+
+**This phase does not classify or interpret events.** It only extracts what is
+objectively present in the text, so that a later phase (business rules, semantic
+search, embeddings, or an LLM) can reason about it. No AI models are used here —
+extraction is done with regular expressions and optional spaCy NER.
+
+```bash
+# Build snapshots for every EVENT filing that has clean_text and no snapshot yet
+python -m src.main --build-snapshots
+```
+
+Snapshots are stored in the `filing_snapshots` table, one row per filing (deduplicated
+by `filing_filename`). Company and people extraction use spaCy NER (`en_core_web_sm`)
+when installed; otherwise `extract_companies` falls back to a suffix-based regex
+(e.g. "ABC Holdings Inc.") and `extract_people` returns an empty list — the pipeline
+never breaks because spaCy is missing.
+
+```bash
+# Optional: enable NER-based company/people extraction
+pip install spacy
+python -m spacy download en_core_web_sm
+```
+
+### LLM First Pass
+
+A first classification pass over EVENT filings using an LLM — decides what each filing is
+really about and whether it's worth deep research, without relying on `keywords_json` as
+the primary signal (it's passed to the model only as optional context).
+
+Works with any OpenAI-compatible chat completions API (OpenAI, Grok/x.ai, or a local
+proxy). Configure it in `.env`:
+
+```bash
+LLM_API_KEY="sk-..."
+LLM_BASE_URL="https://api.openai.com/v1"     # or https://api.x.ai/v1, etc.
+LLM_MODEL="gpt-4o-mini"
+LLM_PROVIDER="openai-compatible"             # optional, stored alongside each result
+```
+
+```bash
+# Classify up to 20 pending EVENT filings
+python -m src.main --llm-first-pass --limit 20
+
+# Classify everything pending (no limit)
+python -m src.main --llm-first-pass
+```
+
+For each filing, the pipeline sends a compact input (company name, ticker, form type,
+filing URL, detected Item numbers, and the first 25,000 characters of `clean_text`) and
+asks for strict JSON: a `primary_event_type` from a fixed list (e.g. `MERGER`,
+`TENDER_OFFER`, `BANKRUPTCY_DISTRESS`, `ROUTINE`, ...), an `importance_score` (0-100), a
+`deep_research` flag, a short summary, and text evidence. Results are stored in
+`llm_filing_analysis`, one row per filing (deduplicated by `filing_filename`) — filings
+already analyzed are skipped on the next run.
+
+If the model's response isn't valid JSON, the raw response is still saved with
+`primary_event_type = "PARSE_ERROR"` so nothing is silently lost.
+
 ### Run tests
 
 ```bash
@@ -104,6 +214,16 @@ otc-filing-intelligence/
 │   │   └── enrich_filings.py      # Update filings.ticker from companies table
 │   ├── otcmarkets/
 │   │   └── otc_screener_importer.py  # Parse OTC Markets Stock Screener CSV
+│   ├── filing_routing/
+│   │   └── routing.py             # get_filing_category(form_type) -> EVENT/CONTEXT/IGNORED
+│   ├── document_intelligence/
+│   │   ├── extractor.py           # Extraction functions + create_document_snapshot
+│   │   ├── patterns.py            # Regex patterns and keyword lists
+│   │   └── models.py              # DocumentSnapshot dataclass
+│   ├── llm_analysis/
+│   │   ├── client.py              # OpenAI-compatible chat completions client
+│   │   ├── prompts.py             # Event types, system prompt, user message builder
+│   │   └── first_pass.py          # Orchestration + robust JSON parsing
 │   ├── database/
 │   │   ├── db.py                  # SQLite: all table init, insert, upsert, enrich
 │   │   └── models.py              # Filing dataclass
@@ -115,7 +235,10 @@ otc-filing-intelligence/
 │   ├── test_parser.py
 │   ├── test_downloader.py
 │   ├── test_company_enrichment.py
-│   └── test_otc_importer.py
+│   ├── test_otc_importer.py
+│   ├── test_document_intelligence.py
+│   ├── test_filing_routing.py
+│   └── test_llm_analysis.py
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -131,7 +254,7 @@ Table `filings` in `data/filings.db`:
 | cik           | TEXT    | SEC company identifier             |
 | company_name  | TEXT    |                                    |
 | form_type     | TEXT    | e.g. 8-K, 10-K                    |
-| date_filed    | TEXT    | YYYY-MM-DD                         |
+| date_filed    | TEXT    | YYYYMMDD, as provided by SEC's master.idx |
 | filename      | TEXT    | UNIQUE — used for dedup            |
 | filing_url    | TEXT    | Full URL to the filing             |
 | raw_text      | TEXT    | Raw content (if downloaded)        |
@@ -141,6 +264,7 @@ Table `filings` in `data/filings.db`:
 | otc_tier      | TEXT    | Set via `--enrich-filings-with-otc`|
 | sec_type      | TEXT    | Set via `--enrich-filings-with-otc`|
 | country       | TEXT    | Set via `--enrich-filings-with-otc`|
+| filing_category | TEXT  | `EVENT`, `CONTEXT`, or `IGNORED` — set automatically on insert, see [Filing Routing](#filing-routing) |
 | created_at    | TEXT    | ISO 8601 UTC timestamp             |
 
 Table `companies`:
@@ -170,6 +294,50 @@ Table `otc_securities`:
 | source         | TEXT    | "OTC Markets Stock Screener"       |
 | updated_at     | TEXT    | ISO 8601 UTC timestamp             |
 
+Table `filing_snapshots` (one row per filing, see [Document Intelligence](#document-intelligence)):
+
+| Column           | Type    | Notes                                    |
+|------------------|---------|-------------------------------------------|
+| id               | INTEGER | Primary key                               |
+| filing_filename  | TEXT    | UNIQUE — matches `filings.filename`       |
+| form_type        | TEXT    |                                            |
+| items_json       | TEXT    | JSON list, e.g. `["2.01", "5.02"]`         |
+| keywords_json    | TEXT    | JSON list of matched keywords              |
+| money_json       | TEXT    | JSON list of monetary amounts              |
+| percentages_json | TEXT    | JSON list of percentages                   |
+| dates_json       | TEXT    | JSON list of dates                         |
+| companies_json   | TEXT    | JSON list of company names                 |
+| people_json      | TEXT    | JSON list of person names                  |
+| agreements_json  | TEXT    | JSON list of named agreement types         |
+| sections_json    | TEXT    | JSON list, e.g. `["Item 2.01", "Item 5.02"]`|
+| created_at       | TEXT    | ISO 8601 UTC timestamp                     |
+
+Table `llm_filing_analysis` (one row per filing, see [LLM First Pass](#llm-first-pass)):
+
+| Column                     | Type    | Notes                                          |
+|----------------------------|---------|--------------------------------------------------|
+| id                         | INTEGER | Primary key                                       |
+| filing_filename            | TEXT    | UNIQUE — matches `filings.filename`               |
+| provider                   | TEXT    | e.g. `openai-compatible` (from `LLM_PROVIDER`)    |
+| model                      | TEXT    | Model name used (from `LLM_MODEL`)                |
+| primary_event_type         | TEXT    | One of the fixed event types, or `PARSE_ERROR`    |
+| secondary_event_types_json | TEXT    | JSON list of additional event types               |
+| is_material                | INTEGER | 0/1                                               |
+| importance_score           | INTEGER | 0-100                                             |
+| market_impact              | TEXT    | `LOW`, `MEDIUM`, `HIGH`, or `VERY_HIGH`           |
+| deep_research               | INTEGER | 0/1 — flags filings worth a deeper LLM pass       |
+| summary                    | TEXT    | Short LLM-generated summary of the event          |
+| key_entities_json           | TEXT    | JSON list of relevant names/amounts/instruments   |
+| evidence_json               | TEXT    | JSON list of short evidence snippets              |
+| reason_for_score           | TEXT    | Brief explanation from the model                  |
+| next_step                  | TEXT    | `IGNORE`, `WATCH`, or `RESEARCH`                  |
+| raw_response               | TEXT    | Raw LLM response, kept even on parse failure      |
+| created_at                 | TEXT    | ISO 8601 UTC timestamp                            |
+
+`market_impact`, `next_step`, and `key_entities_json` are backfilled automatically via
+`ALTER TABLE` on `init_db()` for databases created before this schema existed, so no
+manual migration step is needed — existing rows just get `NULL`/`[]` for the new fields.
+
 ## Analytical queries
 
 ```sql
@@ -182,6 +350,5 @@ ORDER BY date_filed DESC;
 
 ## Filtered form types
 
-```
-8-K, 10-K, 10-Q, SC TO-I, SC TO-T, SC 13D, SC 13G, DEF 14A, S-1
-```
+See [Filing Routing](#filing-routing) for the full EVENT/CONTEXT breakdown. Anything not
+listed there is IGNORED and never stored.

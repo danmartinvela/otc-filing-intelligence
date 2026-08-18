@@ -250,3 +250,96 @@ def test_init_db_adds_ticker_exchange_to_existing_filings(tmp_path):
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(filings)")}
     assert "ticker" in cols
     assert "exchange" in cols
+
+
+# ── filing_category ───────────────────────────────────────────────────────────
+
+
+def test_insert_filings_assigns_event_category(tmp_path):
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    insert_filings([_make_filing("320193", "edgar/data/320193/8k.txt")], db_path)
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT filing_category FROM filings WHERE filename = 'edgar/data/320193/8k.txt'"
+        ).fetchone()
+    assert row["filing_category"] == "EVENT"
+
+
+def test_insert_filings_assigns_context_category(tmp_path):
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    filing = Filing(
+        cik="320193",
+        company_name="Test Corp",
+        form_type="10-K",
+        date_filed="2024-05-15",
+        filename="edgar/data/320193/10k.txt",
+        filing_url="https://www.sec.gov/Archives/edgar/data/320193/10k.txt",
+    )
+    insert_filings([filing], db_path)
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT filing_category FROM filings WHERE filename = 'edgar/data/320193/10k.txt'"
+        ).fetchone()
+    assert row["filing_category"] == "CONTEXT"
+
+
+def test_insert_filings_assigns_ignored_category(tmp_path):
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    filing = Filing(
+        cik="320193",
+        company_name="Test Corp",
+        form_type="4",
+        date_filed="2024-05-15",
+        filename="edgar/data/320193/form4.txt",
+        filing_url="https://www.sec.gov/Archives/edgar/data/320193/form4.txt",
+    )
+    insert_filings([filing], db_path)
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT filing_category FROM filings WHERE filename = 'edgar/data/320193/form4.txt'"
+        ).fetchone()
+    assert row["filing_category"] == "IGNORED"
+
+
+def test_init_db_backfills_filing_category_on_existing_rows(tmp_path):
+    """Upgrading a pre-filing_category DB assigns categories to existing rows."""
+    db_path = tmp_path / "test.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE filings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cik TEXT NOT NULL,
+                company_name TEXT NOT NULL,
+                form_type TEXT NOT NULL,
+                date_filed TEXT NOT NULL,
+                filename TEXT NOT NULL UNIQUE,
+                filing_url TEXT NOT NULL,
+                raw_text TEXT,
+                clean_text TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """INSERT INTO filings (cik, company_name, form_type, date_filed, filename,
+               filing_url, created_at) VALUES
+               ('1', 'A', '8-K', '2024-01-01', 'a.txt', 'https://sec.gov/a.txt', '2024-01-01'),
+               ('2', 'B', '10-Q', '2024-01-01', 'b.txt', 'https://sec.gov/b.txt', '2024-01-01'),
+               ('3', 'C', '4', '2024-01-01', 'c.txt', 'https://sec.gov/c.txt', '2024-01-01')
+            """
+        )
+
+    init_db(db_path)
+
+    with get_connection(db_path) as conn:
+        rows = {
+            r["filename"]: r["filing_category"]
+            for r in conn.execute("SELECT filename, filing_category FROM filings")
+        }
+    assert rows["a.txt"] == "EVENT"
+    assert rows["b.txt"] == "CONTEXT"
+    assert rows["c.txt"] == "IGNORED"

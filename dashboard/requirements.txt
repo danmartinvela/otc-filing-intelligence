@@ -1,0 +1,14 @@
+streamlit>=1.38.0
+plotly>=5.22.0
+pandas>=2.2.0
+# Without this, Streamlit falls back to a polling file-watcher that makes
+# every rerun (any filter change, page switch, etc.) noticeably slower.
+watchdog>=4.0.0
+
+# screens/process_filings.py imports the real backend package (src/) to run
+# the ingestion pipeline — these are src/'s own dependencies (see the
+# project root requirements.txt), needed here because dashboard/.venv is a
+# separate environment from the backend's.
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+python-dotenv>=1.0.0

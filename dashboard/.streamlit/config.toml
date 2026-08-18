@@ -1,0 +1,17 @@
+# Native Streamlit theme so built-in widgets (sliders, checkboxes, the
+# ProgressColumn bars in the Explorador table, buttons) match the dark
+# financial-terminal palette in styles/main.css and config.THEME, instead of
+# Streamlit's default light background + red accent.
+[theme]
+base = "dark"
+primaryColor = "#3987e5"
+backgroundColor = "#0d0d0d"
+secondaryBackgroundColor = "#1a1a19"
+textColor = "#ffffff"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

@@ -6,22 +6,11 @@ import requests
 
 from .parser import parse_master_idx
 from ..database.models import Filing
+from ..filing_routing.routing import IGNORED, get_filing_category
 
 logger = logging.getLogger(__name__)
 
 SEC_DAILY_INDEX_BASE = "https://www.sec.gov/Archives/edgar/daily-index"
-
-IMPORTANT_FORMS = [
-    "8-K",
-    "10-K",
-    "10-Q",
-    "SC TO-I",
-    "SC TO-T",
-    "SC 13D",
-    "SC 13G",
-    "DEF 14A",
-    "S-1",
-]
 
 
 def get_quarter(month: int) -> int:
@@ -54,11 +43,15 @@ def fetch_daily_index(target_date: date, user_agent: str) -> str:
 
 
 def get_filtered_filings(target_date: date, user_agent: str) -> List[Filing]:
+    """Fetch and keep only filings that are EVENT or CONTEXT (see filing_routing).
+
+    IGNORED form types are dropped here, before they ever reach the database.
+    """
     content = fetch_daily_index(target_date, user_agent)
     all_filings = parse_master_idx(content)
-    filtered = [f for f in all_filings if f.form_type in IMPORTANT_FORMS]
+    filtered = [f for f in all_filings if get_filing_category(f.form_type) != IGNORED]
     logger.info(
         f"Parsed {len(all_filings)} total filings, "
-        f"{len(filtered)} match the form filter."
+        f"{len(filtered)} match the EVENT/CONTEXT form filter."
     )
     return filtered
