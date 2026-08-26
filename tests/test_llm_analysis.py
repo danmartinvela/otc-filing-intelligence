@@ -438,7 +438,7 @@ def test_run_first_pass_processes_pending_filings_and_saves_results(mock_client_
     insert_filings([_make_filing("event.txt", clean_text="Item 2.01 details.")], db_path)
 
     monkeypatch.setattr("src.llm_analysis.first_pass.get_event_filings_needing_llm_analysis",
-                         lambda limit=None: get_event_filings_needing_llm_analysis(limit=limit, db_path=db_path))
+                         lambda **kwargs: get_event_filings_needing_llm_analysis(db_path=db_path, **kwargs))
     monkeypatch.setattr("src.llm_analysis.first_pass.insert_llm_filing_analysis",
                          lambda **kwargs: insert_llm_filing_analysis(db_path=db_path, **kwargs))
 
@@ -466,7 +466,7 @@ def test_run_first_pass_counts_errors_without_raising(mock_client_cls, tmp_path,
     insert_filings([_make_filing("event.txt", clean_text="Item 2.01 details.")], db_path)
 
     monkeypatch.setattr("src.llm_analysis.first_pass.get_event_filings_needing_llm_analysis",
-                         lambda limit=None: get_event_filings_needing_llm_analysis(limit=limit, db_path=db_path))
+                         lambda **kwargs: get_event_filings_needing_llm_analysis(db_path=db_path, **kwargs))
     monkeypatch.setattr("src.llm_analysis.first_pass.insert_llm_filing_analysis",
                          lambda **kwargs: insert_llm_filing_analysis(db_path=db_path, **kwargs))
 

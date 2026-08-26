@@ -459,25 +459,122 @@ def get_filing_snapshot(filename: str, db_path: Path = DB_PATH) -> Optional[Dict
 
 # ── LLM first-pass analysis ──────────────────────────────────────────────────
 
+def _llm_selection_where(
+    category: str,
+    date_from: Optional[str],
+    date_to: Optional[str],
+    form_types: Optional[List[str]],
+    status: str,
+) -> tuple:
+    """Shared WHERE fragment for 'which filings are candidates for the LLM'.
+
+    The one place that decides filing selection for LLM analysis — the
+    pending-fetch, the counts, and the preview table all build on this, so
+    they can never disagree about which rows match a given set of filters.
+
+    status: "pending" (default, no llm_filing_analysis row yet), "analyzed"
+    (already has one), or "all" (no status restriction).
+    """
+    clauses = ["f.filing_category = ?", "f.clean_text IS NOT NULL", "f.clean_text != ''"]
+    params: List = [category]
+    if date_from:
+        clauses.append("f.date_filed >= ?")
+        params.append(date_from)
+    if date_to:
+        clauses.append("f.date_filed <= ?")
+        params.append(date_to)
+    if form_types:
+        placeholders = ",".join("?" for _ in form_types)
+        clauses.append(f"f.form_type IN ({placeholders})")
+        params.extend(form_types)
+    if status == "pending":
+        clauses.append("f.filename NOT IN (SELECT filing_filename FROM llm_filing_analysis)")
+    elif status == "analyzed":
+        clauses.append("f.filename IN (SELECT filing_filename FROM llm_filing_analysis)")
+    # status == "all": no extra clause
+    return " AND ".join(clauses), params
+
+
 def get_event_filings_needing_llm_analysis(
-    limit: Optional[int] = None, db_path: Path = DB_PATH
+    limit: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    form_types: Optional[List[str]] = None,
+    status: str = "pending",
+    order: str = "recent",
+    category: str = EVENT,
+    db_path: Path = DB_PATH,
 ) -> List[Dict]:
-    """Return EVENT filings with clean_text that have no llm_filing_analysis row yet.
+    """Return EVENT filings with clean_text matching the given selection —
+    defaults (no date/form_types, status="pending", order="recent") match
+    the original behavior exactly, so `--llm-first-pass --limit N` alone is
+    unchanged.
 
     Includes items_json from filing_snapshots (if a snapshot already exists) so the
     LLM prompt can reference detected Item numbers.
     """
-    query = """
+    where, params = _llm_selection_where(category, date_from, date_to, form_types, status)
+    direction = "ASC" if order == "oldest" else "DESC"
+    query = f"""
         SELECT f.filename, f.company_name, f.ticker, f.form_type, f.filing_url,
                f.clean_text, s.items_json, s.keywords_json
         FROM filings f
         LEFT JOIN filing_snapshots s ON s.filing_filename = f.filename
-        WHERE f.filing_category = ?
-          AND f.clean_text IS NOT NULL AND f.clean_text != ''
-          AND f.filename NOT IN (SELECT filing_filename FROM llm_filing_analysis)
-        ORDER BY f.date_filed DESC
+        WHERE {where}
+        ORDER BY f.date_filed {direction}
     """
-    params: List = [EVENT]
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+    with get_connection(db_path) as conn:
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_llm_selection_counts(
+    category: str = EVENT,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    form_types: Optional[List[str]] = None,
+    db_path: Path = DB_PATH,
+) -> Dict[str, int]:
+    """Counts for the 'before you spend money' preview: how many filings match
+    period+category+form (any status), and how many of those are pending —
+    independent of whatever status filter is currently selected in the UI.
+    """
+    with get_connection(db_path) as conn:
+        where_all, params_all = _llm_selection_where(category, date_from, date_to, form_types, "all")
+        total = conn.execute(f"SELECT COUNT(*) AS n FROM filings f WHERE {where_all}", params_all).fetchone()["n"]
+        where_pending, params_pending = _llm_selection_where(category, date_from, date_to, form_types, "pending")
+        pending = conn.execute(f"SELECT COUNT(*) AS n FROM filings f WHERE {where_pending}", params_pending).fetchone()["n"]
+    return {"total_matching": total, "pending": pending}
+
+
+def get_llm_selection_preview(
+    category: str = EVENT,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    form_types: Optional[List[str]] = None,
+    status: str = "pending",
+    order: str = "recent",
+    limit: Optional[int] = None,
+    db_path: Path = DB_PATH,
+) -> List[Dict]:
+    """Lightweight rows for the preview table — same selection as
+    get_event_filings_needing_llm_analysis but WITHOUT clean_text, so
+    previewing never loads full document text just to display a row count.
+    """
+    where, params = _llm_selection_where(category, date_from, date_to, form_types, status)
+    direction = "ASC" if order == "oldest" else "DESC"
+    query = f"""
+        SELECT f.filename, f.date_filed, f.company_name, f.ticker, f.form_type,
+               LENGTH(f.clean_text) AS text_length,
+               CASE WHEN l.filing_filename IS NULL THEN 0 ELSE 1 END AS is_analyzed
+        FROM filings f
+        LEFT JOIN llm_filing_analysis l ON l.filing_filename = f.filename
+        WHERE {where}
+        ORDER BY f.date_filed {direction}
+    """
     if limit is not None:
         query += " LIMIT ?"
         params.append(limit)

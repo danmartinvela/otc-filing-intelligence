@@ -178,21 +178,36 @@ class LLMPipelineResult:
     errors: int = 0
 
 
-def run_llm_pipeline(limit: Optional[int] = None, on_progress: ProgressCallback = None) -> LLMPipelineResult:
-    """Run the LLM first pass over pending EVENT filings.
+def run_llm_pipeline(
+    limit: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    form_types: Optional[List[str]] = None,
+    status: str = "pending",
+    order: str = "recent",
+    on_progress: ProgressCallback = None,
+) -> LLMPipelineResult:
+    """Run the LLM first pass over a selection of EVENT filings.
 
-    Delegates entirely to llm_analysis.first_pass.run_first_pass — no part
-    of that loop is reimplemented here. Raises LLMConfigError unchanged if
-    LLM_API_KEY/LLM_BASE_URL/LLM_MODEL aren't configured; callers decide how
-    to surface that (main() exits, the dashboard shows an inline warning).
+    date_from/date_to/form_types/status/order select the candidates — see
+    llm_analysis.first_pass.run_first_pass, which this delegates to
+    entirely (no part of that loop is reimplemented here). Defaults match
+    the original "all pending EVENT filings" behavior. Raises
+    LLMConfigError unchanged if LLM_API_KEY/LLM_BASE_URL/LLM_MODEL aren't
+    configured; callers decide how to surface that (main() exits, the
+    dashboard shows an inline warning).
     """
     result = LLMPipelineResult()
 
-    def _forward(done: int, total: int, ok: bool, error: Optional[str]) -> None:
+    def _forward(done: int, total: int, ok: bool, error: Optional[str], info: Optional[Dict]) -> None:
         result.pending = total
-        _emit(on_progress, stage="llm", done=done, total=total, ok=ok, error=error)
+        extra = info or {}
+        _emit(on_progress, stage="llm", done=done, total=total, ok=ok, error=error, **extra)
 
-    processed, errors = run_first_pass(limit=limit, on_progress=_forward)
+    processed, errors = run_first_pass(
+        limit=limit, date_from=date_from, date_to=date_to, form_types=form_types,
+        status=status, order=order, on_progress=_forward,
+    )
     result.processed = processed
     result.errors = errors
     return result

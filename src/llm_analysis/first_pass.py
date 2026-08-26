@@ -77,17 +77,34 @@ def parse_llm_response(raw_content: str) -> Dict:
 
 def run_first_pass(
     limit: Optional[int] = None,
-    on_progress: Optional[Callable[[int, int, bool, Optional[str]], None]] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    form_types: Optional[List[str]] = None,
+    status: str = "pending",
+    order: str = "recent",
+    category: Optional[str] = None,
+    on_progress: Optional[Callable[[int, int, bool, Optional[str], Optional[Dict]], None]] = None,
 ) -> tuple[int, int]:
-    """Run the LLM first pass over pending EVENT filings. Returns (processed, errors).
+    """Run the LLM first pass over a selection of EVENT filings. Returns (processed, errors).
+
+    date_from/date_to/form_types/status/order/category select which filings
+    are candidates (see database.db.get_event_filings_needing_llm_analysis —
+    the single source of truth for that selection, shared with the preview
+    counts/table so the CLI, the dashboard preview, and this run never
+    disagree). None of the new parameters change behavior when omitted:
+    defaults match the original "all pending EVENT filings" selection.
 
     on_progress, if given, is called once per filing as
-    on_progress(done, total, ok, error) — after the attempt, whether it
-    succeeded or not. Optional and unused by the CLI, so passing nothing
-    keeps this function's behavior exactly as before.
+    on_progress(done, total, ok, error, info) — after the attempt. info is
+    {"company_name", "primary_event_type", "importance_score", "deep_research"}
+    on success, None on failure. Optional and unused by the CLI, so passing
+    nothing keeps this function's behavior exactly as before.
     """
     client = LLMClient()
-    pending = get_event_filings_needing_llm_analysis(limit=limit)
+    kwargs = dict(limit=limit, date_from=date_from, date_to=date_to, form_types=form_types, status=status, order=order)
+    if category is not None:
+        kwargs["category"] = category
+    pending = get_event_filings_needing_llm_analysis(**kwargs)
     total = len(pending)
     logger.info(f"LLM first pass: {total} filing(s) pending.")
 
@@ -103,7 +120,7 @@ def run_first_pass(
             errors += 1
             error = str(exc)
             if on_progress:
-                on_progress(idx, total, False, error)
+                on_progress(idx, total, False, error, None)
             continue
 
         parsed = parse_llm_response(response.content)
@@ -116,6 +133,12 @@ def run_first_pass(
         )
         processed += 1
         if on_progress:
-            on_progress(idx, total, True, None)
+            info = {
+                "company_name": filing.get("company_name"),
+                "primary_event_type": parsed.get("primary_event_type"),
+                "importance_score": parsed.get("importance_score"),
+                "deep_research": bool(parsed.get("deep_research")),
+            }
+            on_progress(idx, total, True, None, info)
 
     return processed, errors

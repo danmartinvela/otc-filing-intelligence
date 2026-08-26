@@ -95,6 +95,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Max number of filings to process with --llm-first-pass (default: no limit)",
     )
+    parser.add_argument(
+        "--from-date",
+        type=_parse_date,
+        metavar="YYYY-MM-DD",
+        default=None,
+        help="With --llm-first-pass, only consider filings with date_filed >= this date",
+    )
+    parser.add_argument(
+        "--to-date",
+        type=_parse_date,
+        metavar="YYYY-MM-DD",
+        default=None,
+        help="With --llm-first-pass, only consider filings with date_filed <= this date",
+    )
     return parser
 
 
@@ -187,10 +201,12 @@ def _run_build_snapshots() -> None:
         logger.warning(f"  {len(result.errors)} filing(s) failed during snapshot generation.")
 
 
-def _run_llm_first_pass(limit) -> None:
+def _run_llm_first_pass(limit, from_date=None, to_date=None) -> None:
     logger.info("Running LLM first pass over pending EVENT filings...")
+    date_from = from_date.strftime("%Y%m%d") if from_date else None
+    date_to = to_date.strftime("%Y%m%d") if to_date else None
     try:
-        result = run_llm_pipeline(limit=limit)
+        result = run_llm_pipeline(limit=limit, date_from=date_from, date_to=date_to)
     except LLMConfigError as exc:
         logger.error(f"LLM first pass not run: {exc}")
         sys.exit(1)
@@ -238,7 +254,7 @@ def main() -> None:
         _run_build_snapshots()
 
     if args.llm_first_pass:
-        _run_llm_first_pass(args.limit)
+        _run_llm_first_pass(args.limit, args.from_date, args.to_date)
 
     logger.info("Done.")
 
