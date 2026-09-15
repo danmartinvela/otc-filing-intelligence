@@ -169,7 +169,10 @@ div[class*="st-key-section-"] {
   background-color: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 1rem 1.15rem 0.5rem 1.15rem;
+  /* Symmetric on all sides: content here (e.g. .evidence-list) sets its own
+     margin to 0, so a smaller bottom padding than top/left/right reads as
+     a visibly tighter gap instead of the balanced card it's meant to be. */
+  padding: 1rem 1.15rem;
   margin-bottom: 1.5rem;
 }
 
@@ -277,7 +280,15 @@ div[class*="st-key-section-"] {
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  margin: 0.9rem 0 0.35rem 0;
+  margin: 0 0 0.35rem 0;
+}
+
+/* For a section title that follows other filter widgets (e.g. "Orden"
+   after the filter fields) — NOT the first one ("Filtros"), which sits
+   right below Streamlit's own native stSidebarNavSeparator; giving it this
+   same border-top too doubled up into two divider lines back to back. */
+.filter-panel-title--section {
+  margin-top: 0.9rem;
   padding-top: 0.6rem;
   border-top: 1px solid var(--border);
 }
@@ -325,4 +336,61 @@ div[class*="st-key-section-"] {
   color: var(--text-muted);
   font-size: 0.85rem;
   font-style: italic;
+}
+
+/* ── Procesar filings: LLM progress/results table ───────────────────────────
+   Fixed-proportion grid (not monospace padding) so a long company name or
+   event type can never push a later column out of place — each cell is
+   clipped with an ellipsis (full value on hover) instead of wrapping or
+   shifting its neighbors. */
+
+.llm-progress-table {
+  width: 100%;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.82rem;
+}
+
+.llm-progress-header,
+.llm-progress-row {
+  display: grid;
+  /* fr units, not %: with a column-gap, percentage tracks sum to 100% of
+     the container *plus* the gaps on top, overflowing it (the last column
+     — Score — visibly spilling past the right edge). fr tracks divide only
+     the space left over after gaps are subtracted, so 1/4/4/1 always fits
+     exactly within 100%, gaps included. */
+  grid-template-columns: 1fr 4fr 4fr 1fr;
+  column-gap: 0.75rem;
+  align-items: center;
+}
+
+.llm-progress-header {
+  font-family: var(--font-sans);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0 0.25rem 0.4rem 0.25rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.3rem;
+}
+
+.llm-progress-row {
+  padding: 0.15rem 0.25rem;
+  color: var(--text-secondary);
+}
+
+.llm-progress-row.is-error {
+  color: var(--status-critical);
+}
+
+.llm-progress-cell {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.llm-progress-cell--score {
+  text-align: right;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
 }

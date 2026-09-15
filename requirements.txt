@@ -2,8 +2,3 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 python-dotenv>=1.0.0
 pytest>=8.0.0
-
-# Optional: enables NER-based extract_companies/extract_people in
-# document_intelligence (falls back to regex / [] if not installed).
-# spacy>=3.7.0
-# Then: python -m spacy download en_core_web_sm

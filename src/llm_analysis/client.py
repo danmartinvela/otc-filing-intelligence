@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -8,6 +9,15 @@ import requests
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 60
+
+# Retry policy for transient failures — needed even more once calls run
+# concurrently (src.llm_analysis.first_pass), since several workers sharing
+# the same provider rate limit makes 429s more likely than in the old
+# sequential loop.
+_MAX_RETRIES = 3
+_RETRY_BACKOFF_SECONDS = 2.0
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_MAX_RETRY_AFTER_SECONDS = 30.0
 
 
 class LLMConfigError(Exception):
@@ -56,6 +66,17 @@ class LLMClient:
             )
 
     def chat_completion(self, system_prompt: str, user_message: str) -> LLMResponse:
+        """POST one chat completion request, retrying on transient failures.
+
+        Retries (bounded, with backoff) on HTTP 429/5xx, timeouts, and
+        connection errors (resets, refused connections, etc.) — the same
+        four failure modes a batch of concurrent workers sharing one
+        provider rate limit is most likely to hit. Anything else (4xx other
+        than 429, malformed response body) raises immediately since retrying
+        it would just fail the same way again. Safe to call from multiple
+        threads at once: no shared mutable state, each call opens its own
+        connection.
+        """
         url = f"{self.base_url}/chat/completions"
         payload = {
             "model": self.model,
@@ -69,8 +90,47 @@ class LLMClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        response = requests.post(url, json=payload, headers=headers, timeout=self.timeout)
-        response.raise_for_status()
-        data = response.json()
-        content = data["choices"][0]["message"]["content"]
-        return LLMResponse(content=content, raw_response=data)
+
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = requests.post(url, json=payload, headers=headers, timeout=self.timeout)
+                response.raise_for_status()
+                data = response.json()
+                content = data["choices"][0]["message"]["content"]
+                return LLMResponse(content=content, raw_response=data)
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
+                    wait = self._retry_wait(exc, attempt, status)
+                    logger.warning(
+                        f"LLM API returned {status} (attempt {attempt + 1}/{_MAX_RETRIES + 1}); "
+                        f"retrying in {wait:.1f}s..."
+                    )
+                    time.sleep(wait)
+                    continue
+                raise
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                if attempt < _MAX_RETRIES:
+                    wait = self._retry_wait(exc, attempt, None)
+                    logger.warning(
+                        f"LLM API request failed ({exc.__class__.__name__}) "
+                        f"(attempt {attempt + 1}/{_MAX_RETRIES + 1}); retrying in {wait:.1f}s..."
+                    )
+                    time.sleep(wait)
+                    continue
+                raise
+
+    @staticmethod
+    def _retry_wait(exc: Exception, attempt: int, status: Optional[int]) -> float:
+        """Honor a 429's Retry-After header when present (capped, so a
+        misbehaving provider can't stall a batch indefinitely); otherwise
+        exponential backoff."""
+        if status == 429:
+            response = getattr(exc, "response", None)
+            retry_after = response.headers.get("Retry-After") if response is not None else None
+            if retry_after is not None:
+                try:
+                    return min(float(retry_after), _MAX_RETRY_AFTER_SECONDS)
+                except ValueError:
+                    pass
+        return _RETRY_BACKOFF_SECONDS * (2 ** attempt)

@@ -14,6 +14,7 @@ This is the one page in the dashboard that writes to filings.db, and only
 indirectly: it calls the same pipeline functions the CLI (src/main.py) calls.
 Every other page stays strictly read-only.
 """
+import html
 import time
 from datetime import date
 from typing import Dict, List, Optional, Tuple
@@ -31,12 +32,11 @@ from src.database.db import get_llm_selection_counts, get_llm_selection_preview
 from src.llm_analysis.client import LLMConfigError
 from src.pipeline import (
     DailyPipelineResult,
+    DEFAULT_LLM_WORKERS,
     LLMPipelineResult,
-    SnapshotPipelineResult,
     get_user_agent,
     run_daily_pipeline,
     run_llm_pipeline,
-    run_snapshot_pipeline,
 )
 
 _STATUS_OPTIONS = {"Solo pendientes de análisis": "pending", "Ya analizados": "analyzed", "Todos": "all"}
@@ -44,24 +44,30 @@ _ORDER_OPTIONS = {"Más recientes primero": "recent", "Más antiguos primero": "
 _PREVIEW_DISPLAY_CAP = 200  # display cap only — never limits what actually gets sent
 
 
+def _format_bytes(value: float) -> str:
+    if value >= 1024 * 1024:
+        return f"{value / (1024 * 1024):.1f} MB"
+    if value >= 1024:
+        return f"{value / 1024:.1f} KB"
+    return f"{value:.0f} B"
+
+
 # ── A. Ingesta SEC ────────────────────────────────────────────────────────────
 
-def _run_ingest(
-    target_date: date, download_index: bool, download_content: bool, build_snapshots: bool
-) -> None:
+def _run_ingest(target_date: date, download_index: bool, download_content: bool) -> None:
     started = time.time()
     daily_result: Optional[DailyPipelineResult] = None
-    snapshot_result: Optional[SnapshotPipelineResult] = None
 
     with st.status("Procesando...", expanded=True) as status:
         if download_index:
             st.write(f"**Procesando {target_date.strftime('%d/%m/%Y')}**")
             user_agent = get_user_agent()
             content_progress = None
+            content_stats = None
             content_failed = 0
 
             def _daily_progress(data: Dict) -> None:
-                nonlocal content_progress, content_failed
+                nonlocal content_progress, content_stats, content_failed
                 stage = data["stage"]
                 if stage == "index":
                     st.write(
@@ -77,9 +83,20 @@ def _run_ingest(
                     if content_progress is None:
                         st.write("Descargando contenido de los documentos...")
                         content_progress = st.progress(0.0)
+                        content_stats = st.empty()
                     if not data["ok"]:
                         content_failed += 1
                     content_progress.progress(data["done"] / data["total"])
+                    if data.get("skipped"):
+                        content_stats.caption(f"[{data['done']}/{data['total']}] {data['label']} — ya tenía contenido, omitido")
+                    else:
+                        content_stats.caption(
+                            f"[{data['done']}/{data['total']}] {data['label']} — "
+                            f"{_format_bytes(data['bytes_downloaded'])} descargados · "
+                            f"{_format_bytes(data['bytes_stored'])} guardados · "
+                            f"{_format_bytes(data['speed_bytes_per_sec'])}/s · "
+                            f"ETA {data['eta_seconds']:.0f}s"
+                        )
                     if data["done"] == data["total"]:
                         st.write(f"✓ Contenido descargado ({data['total'] - content_failed} de {data['total']})")
 
@@ -92,25 +109,13 @@ def _run_ingest(
             except Exception as exc:
                 st.error(f"Error al descargar el índice SEC: {exc}")
 
-        if build_snapshots:
-            st.write("Generando Document Snapshots...")
-            snap_progress = st.progress(0.0)
-
-            def _snapshot_progress(data: Dict) -> None:
-                snap_progress.progress(data["done"] / max(data["total"], 1))
-
-            snapshot_result = run_snapshot_pipeline(on_progress=_snapshot_progress)
-            st.write(f"✓ {snapshot_result.built} snapshots generados")
-
         status.update(label="Ingesta completada", state="complete")
 
-    _render_ingest_summary(daily_result, snapshot_result, time.time() - started)
+    _render_ingest_summary(daily_result, time.time() - started)
     st.cache_data.clear()
 
 
-def _render_ingest_summary(
-    daily: Optional[DailyPipelineResult], snapshot: Optional[SnapshotPipelineResult], elapsed_seconds: float
-) -> None:
+def _render_ingest_summary(daily: Optional[DailyPipelineResult], elapsed_seconds: float) -> None:
     cards: List[Dict] = []
 
     if daily:
@@ -122,19 +127,29 @@ def _render_ingest_summary(
             "label": "Insertados", "value": str(daily.inserted),
             "caption": f"{daily.already_existed} ya existían", "accent": False,
         })
-        if daily.content_downloaded or daily.content_failed:
+        if daily.content_downloaded or daily.content_failed or daily.content_skipped_existing:
+            reduction_pct = (
+                (1 - daily.content_bytes_stored / daily.content_bytes_downloaded) * 100
+                if daily.content_bytes_downloaded else 0.0
+            )
             cards.append({
                 "label": "Contenido descargado", "value": str(daily.content_downloaded),
-                "caption": f"{daily.content_failed} fallos" if daily.content_failed else "sin fallos",
-                "accent": daily.content_failed > 0,
+                "caption": f"{_format_bytes(daily.content_bytes_downloaded)} transferidos", "accent": False,
             })
-
-    if snapshot:
-        cards.append({
-            "label": "Snapshots generados", "value": str(snapshot.built),
-            "caption": f"{len(snapshot.errors)} errores" if snapshot.errors else "sin errores",
-            "accent": bool(snapshot.errors),
-        })
+            cards.append({
+                "label": "Almacenado (solo doc. principal)", "value": _format_bytes(daily.content_bytes_stored),
+                "caption": f"{reduction_pct:.0f}% menos que lo transferido" if daily.content_bytes_downloaded else "",
+                "accent": False,
+            })
+            cards.append({
+                "label": "Omitidos", "value": str(daily.content_skipped_existing),
+                "caption": "ya tenían contenido", "accent": False,
+            })
+            if daily.content_failed:
+                cards.append({
+                    "label": "Fallos de descarga", "value": str(daily.content_failed),
+                    "caption": "", "accent": True,
+                })
 
     cards.append({"label": "Tiempo total", "value": f"{elapsed_seconds:.1f}s", "caption": "", "accent": False})
     render_kpi_row(cards)
@@ -142,8 +157,6 @@ def _render_ingest_summary(
     all_errors: List[str] = []
     if daily:
         all_errors.extend(daily.errors)
-    if snapshot:
-        all_errors.extend(snapshot.errors)
 
     if all_errors:
         st.warning(f"{len(all_errors)} documento(s) no pudieron procesarse correctamente.")
@@ -163,30 +176,23 @@ def _render_ingest_section() -> None:
         "Descargar contenido de los documentos", value=True,
         disabled=not download_index, key="ingest_download_content",
     )
-    build_snapshots = st.checkbox("Generar Document Snapshots", value=True, key="ingest_build_snapshots")
-    st.caption(
-        "Snapshots procesa todo lo pendiente en la base de datos, no solo los "
-        "filings de la fecha elegida arriba — igual que por terminal."
-    )
 
     if st.button("Ejecutar ingesta", type="primary", width="stretch"):
-        if not any([download_index, build_snapshots]):
+        if not download_index:
             st.error("Selecciona al menos una opción de ingesta.")
         else:
-            _run_ingest(target_date, download_index, download_content, build_snapshots)
+            _run_ingest(target_date, download_index, download_content)
 
 
 # ── B. Análisis mediante LLM ──────────────────────────────────────────────────
 
 def _resolve_period() -> Tuple[Optional[str], Optional[str], str]:
-    """Returns (date_from, date_to, display_label) — dates in YYYYMMDD or None."""
+    """Returns (date_from, date_to, display_label) — dates in YYYYMMDD. Default
+    (first radio option, no persisted value yet) is "Día concreto"."""
     period = st.radio(
-        "Periodo", ["Día concreto", "Rango de fechas", "Todos los pendientes"],
+        "Periodo", ["Día concreto", "Rango de fechas"],
         key="llm_period", horizontal=True,
     )
-    if period == "Día concreto":
-        d = st.date_input("Fecha", value=date.today(), key="llm_single_date")
-        return date_to_yyyymmdd(d), date_to_yyyymmdd(d), d.strftime("%d/%m/%Y")
     if period == "Rango de fechas":
         col_from, col_to = st.columns(2)
         with col_from:
@@ -195,7 +201,9 @@ def _resolve_period() -> Tuple[Optional[str], Optional[str], str]:
             d_to = st.date_input("Hasta", value=date.today(), key="llm_range_to")
         label = f"{d_from.strftime('%d/%m/%Y')} – {d_to.strftime('%d/%m/%Y')}"
         return date_to_yyyymmdd(d_from), date_to_yyyymmdd(d_to), label
-    return None, None, "Todo el histórico (sin filtro de fecha)"
+
+    d = st.date_input("Fecha", value=date.today(), key="llm_single_date")
+    return date_to_yyyymmdd(d), date_to_yyyymmdd(d), d.strftime("%d/%m/%Y")
 
 
 def _matching_count_for_status(counts: Dict[str, int], status: str) -> int:
@@ -219,11 +227,11 @@ def _render_llm_preview(
 
     st.markdown('<div class="section-title">Documentos seleccionados</div>', unsafe_allow_html=True)
     render_kpi_row([
-        {"label": "Periodo", "value": period_label, "caption": status_label, "accent": False},
-        {"label": "Filings encontrados", "value": compact_number(counts["total_matching"]), "caption": "categoría EVENT, este periodo/formulario", "accent": False},
-        {"label": "Pendientes de IA", "value": compact_number(counts["pending"]), "caption": "sin análisis todavía", "accent": False},
+        {"label": "Periodo", "value": period_label, "caption": "", "accent": False},
+        {"label": "Filings encontrados", "value": compact_number(counts["total_matching"]), "caption": "", "accent": False},
+        {"label": "Pendientes de IA", "value": compact_number(counts["pending"]), "caption": "", "accent": False},
         {"label": "Límite seleccionado", "value": compact_number(limit) if limit is not None else "Sin límite", "caption": "", "accent": False},
-        {"label": "Se enviarán al LLM", "value": compact_number(to_send), "caption": "con los filtros actuales", "accent": True},
+        {"label": "Se enviarán al LLM", "value": compact_number(to_send), "caption": "", "accent": True},
     ])
 
     if to_send > 0:
@@ -252,15 +260,57 @@ def _render_llm_preview(
     return to_send
 
 
+_LLM_PROGRESS_HEADER = (
+    '<div class="llm-progress-header">'
+    '<div class="llm-progress-cell">Progreso</div>'
+    '<div class="llm-progress-cell">Empresa</div>'
+    '<div class="llm-progress-cell">Evento</div>'
+    '<div class="llm-progress-cell llm-progress-cell--score">Score</div>'
+    '</div>'
+)
+
+
+def _llm_progress_row_html(data: Dict) -> str:
+    """One fixed-column row (10% / 40% / 40% / 10%) for the live LLM
+    progress table — see .llm-progress-* in main.css. Every value is
+    escaped and clipped to its own column (ellipsis + a title tooltip for
+    the full text), so a long company name or event type can never push a
+    later column out of alignment."""
+    done, total = data["done"], data["total"]
+    progress_txt = f"{'✓' if data['ok'] else '✗'} {done}/{total}"
+
+    if data["ok"]:
+        company = html.escape(str(data.get("company_name") or "—"))
+        event = html.escape(str(data.get("primary_event_type") or "—"))
+        score = data.get("importance_score")
+        score_txt = html.escape(str(score)) if score is not None else "—"
+        row_class = "llm-progress-row"
+    else:
+        company = "—"
+        event = html.escape(f"Error: {data['error']}")
+        score_txt = "—"
+        row_class = "llm-progress-row is-error"
+
+    return (
+        f'<div class="{row_class}">'
+        f'<div class="llm-progress-cell">{html.escape(progress_txt)}</div>'
+        f'<div class="llm-progress-cell" title="{company}">{company}</div>'
+        f'<div class="llm-progress-cell" title="{event}">{event}</div>'
+        f'<div class="llm-progress-cell llm-progress-cell--score">{score_txt}</div>'
+        f'</div>'
+    )
+
+
 def _run_llm_analysis(
     date_from: Optional[str], date_to: Optional[str], form_types: Optional[List[str]],
-    status: str, order: str, limit: Optional[int],
+    status: str, order: str, limit: Optional[int], workers: int,
 ) -> None:
     started = time.time()
     deep_research_count = 0
 
     with st.status("Analizando con IA...", expanded=True) as status_box:
         progress = st.progress(0.0)
+        stats_placeholder = st.empty()
         log_lines: List[str] = []
         log_placeholder = st.empty()
 
@@ -268,23 +318,24 @@ def _run_llm_analysis(
             nonlocal deep_research_count
             done, total = data["done"], data["total"]
             progress.progress(done / max(total, 1))
-            if data["ok"]:
-                if data.get("deep_research"):
-                    deep_research_count += 1
-                score = data.get("importance_score")
-                score_txt = f"{score}" if score is not None else "—"
-                log_lines.append(
-                    f"✓ {done}/{total}  {data.get('company_name') or '—':<30} "
-                    f"{data.get('primary_event_type') or '—':<25} {score_txt}"
-                )
-            else:
-                log_lines.append(f"✗ {done}/{total}  Error: {data['error']}")
-            log_placeholder.code("\n".join(log_lines[-20:]), language=None)
+            eta = data.get("eta_seconds", 0.0)
+            stats_placeholder.caption(
+                f"Workers: {data.get('workers', workers)} · "
+                f"Velocidad: {data.get('speed_per_min', 0.0):.1f} filings/min · "
+                f"ETA: {int(eta // 60)}m {int(eta % 60):02d}s"
+            )
+            if data["ok"] and data.get("deep_research"):
+                deep_research_count += 1
+            log_lines.append(_llm_progress_row_html(data))
+            log_placeholder.markdown(
+                f'<div class="llm-progress-table">{_LLM_PROGRESS_HEADER}{"".join(log_lines[-20:])}</div>',
+                unsafe_allow_html=True,
+            )
 
         try:
             llm_result = run_llm_pipeline(
                 limit=limit, date_from=date_from, date_to=date_to, form_types=form_types,
-                status=status, order=order, on_progress=_on_progress,
+                status=status, order=order, workers=workers, on_progress=_on_progress,
             )
         except LLMConfigError as exc:
             status_box.update(label="Análisis LLM no ejecutado", state="error")
@@ -307,10 +358,7 @@ def _run_llm_analysis(
 
 def _render_llm_section(conn) -> None:
     st.markdown("### B. Análisis mediante LLM")
-    st.caption(
-        "Solo se envían al modelo los documentos que cumplan estos filtros — "
-        "nada se procesa automáticamente. Categoría: **EVENT** (fijo por ahora)."
-    )
+    st.caption("Solo se envían al modelo los documentos que cumplan estos filtros")
 
     date_from, date_to, period_label = _resolve_period()
 
@@ -320,11 +368,11 @@ def _render_llm_section(conn) -> None:
         placeholder="Todos los formularios EVENT", key="llm_form_types",
     ) or None
 
-    col_limit, col_status, col_order = st.columns(3)
+    col_limit, col_status, col_order, col_workers = st.columns(4)
     with col_limit:
         max_filings = st.number_input(
             "Máximo de filings a analizar", min_value=0, value=25, step=1,
-            help="0 = sin límite", key="llm_max_filings",
+            key="llm_max_filings",
         )
         limit = None if max_filings == 0 else int(max_filings)
     with col_status:
@@ -333,6 +381,11 @@ def _render_llm_section(conn) -> None:
     with col_order:
         order_label = st.selectbox("Priorizar por", list(_ORDER_OPTIONS.keys()), key="llm_order_label")
         order = _ORDER_OPTIONS[order_label]
+    with col_workers:
+        workers = int(st.number_input(
+            "Workers", min_value=1, max_value=16,
+            value=DEFAULT_LLM_WORKERS, step=1, key="llm_workers",
+        ))
 
     to_send = _render_llm_preview(
         period_label, status_label, limit, date_from, date_to, form_types, status, order,
@@ -342,18 +395,13 @@ def _render_llm_section(conn) -> None:
         f"Analizar {to_send} filing{'s' if to_send != 1 else ''} con IA" if to_send else "Analizar con IA",
         type="primary", width="stretch", disabled=to_send == 0,
     ):
-        _run_llm_analysis(date_from, date_to, form_types, status, order, limit)
+        _run_llm_analysis(date_from, date_to, form_types, status, order, limit, workers)
 
 
 def render() -> None:
     render_page_header(
         "Procesar filings",
         "Ejecuta el pipeline de ingesta y análisis existente sin salir del navegador",
-    )
-
-    st.warning(
-        "Esta página escribe en `filings.db`: descarga filings reales de SEC EDGAR y "
-        "ejecuta el pipeline ya existente. El resto del dashboard es de solo lectura."
     )
 
     conn = get_connection()

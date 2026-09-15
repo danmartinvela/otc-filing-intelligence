@@ -1,8 +1,8 @@
 # otc-filing-intelligence
 
-A pipeline that detects corporate events in SEC EDGAR daily filings, structures them for
-analysis, and keeps supporting filings around as historical context — feeding a future
-LLM stage without paying to re-read every 10-K and 10-Q that goes by.
+A pipeline that detects corporate events in SEC EDGAR daily filings, runs an LLM first
+pass directly over each one's text, and keeps supporting filings around as historical
+context — without paying to re-read every 10-K and 10-Q that goes by.
 
 ## What it does
 
@@ -10,23 +10,30 @@ LLM stage without paying to re-read every 10-K and 10-Q that goes by.
 2. Routes every filing into **EVENT**, **CONTEXT**, or **IGNORED** (see
    [Filing Routing](#filing-routing)) and drops IGNORED ones before they reach the database
 3. Stores filing metadata in `data/filings.db` (SQLite), skipping duplicates
-4. Optionally downloads and cleans the full text of each filing
-5. Runs [Document Intelligence](#document-intelligence) — but only on EVENT filings
+4. Downloads and cleans the primary document's text (`raw_text`/`clean_text`) — see
+   [Filing Routing](#filing-routing)
+5. Runs the [LLM first pass](#llm-first-pass) directly on each EVENT filing's `clean_text`
 
 ## Architecture
 
 ```
-EVENT filings (8-K, tender offers, 13D, S-1, proxy contests...)
+SEC EDGAR
     ↓
-Document Intelligence (structured extraction)
+Download daily index
     ↓
-LLM first pass (event classification + importance score)
+Classify EVENT / CONTEXT / IGNORED
     ↓
-Deep research / full LLM report (future phase)
+Download primary document
+    ↓
+raw_text / clean_text
+    ↓
+LLM first pass on EVENT filings (event classification + importance score)
+    ↓
+llm_filing_analysis
 
 CONTEXT filings (10-K, 10-Q, 20-F, 6-K)
     ↓
-Simple storage (no extraction, no CPU spent)
+Simple storage (no LLM call, no CPU spent)
     ↓
 Retrieved on demand, as background for an EVENT filing
 
@@ -122,48 +129,21 @@ Every filing is classified into exactly one `filing_category` the moment it's fe
 
 | Category  | Form types                                                                                          | What happens to it |
 |-----------|------------------------------------------------------------------------------------------------------|---------------------|
-| `EVENT`   | 8-K, 8-K/A, SC TO-I, SC TO-T, SC TO-C, SC 13D, SC 13D/A, SC 13E3, S-1, S-1/A, 424B3, 424B5, DEF 14A, DEFM14A, PREM14A | Fully analyzed by Document Intelligence, later sent to an LLM |
+| `EVENT`   | 8-K, 8-K/A, SC TO-I, SC TO-T, SC TO-C, SC 13D, SC 13D/A, SC 13E3, S-1, S-1/A, 424B3, 424B5, DEF 14A, DEFM14A, PREM14A | Sent to the LLM first pass |
 | `CONTEXT` | 10-K, 10-Q, 20-F, 6-K                                                                                 | Stored only — retrieved on demand as background for an EVENT filing |
 | `IGNORED` | Everything else                                                                                       | Dropped before it reaches the database |
 
 The classification logic lives in one place: `src/filing_routing/routing.py`,
-`get_filing_category(form_type)`. Both the ingestion filter (`daily_index.py`) and the
-snapshot builder read from this single source of truth — no duplicated form-type lists.
-
-### Document Intelligence
-
-Transforms the raw `clean_text` of an **EVENT filing** into a structured, objective
-**snapshot** — item numbers, money amounts, percentages, dates, agreements, keywords,
-companies, and people mentioned in the document. CONTEXT and IGNORED filings never reach
-this phase — no extractors run on them, no CPU is spent on them.
-
-**This phase does not classify or interpret events.** It only extracts what is
-objectively present in the text, so that a later phase (business rules, semantic
-search, embeddings, or an LLM) can reason about it. No AI models are used here —
-extraction is done with regular expressions and optional spaCy NER.
-
-```bash
-# Build snapshots for every EVENT filing that has clean_text and no snapshot yet
-python -m src.main --build-snapshots
-```
-
-Snapshots are stored in the `filing_snapshots` table, one row per filing (deduplicated
-by `filing_filename`). Company and people extraction use spaCy NER (`en_core_web_sm`)
-when installed; otherwise `extract_companies` falls back to a suffix-based regex
-(e.g. "ABC Holdings Inc.") and `extract_people` returns an empty list — the pipeline
-never breaks because spaCy is missing.
-
-```bash
-# Optional: enable NER-based company/people extraction
-pip install spacy
-python -m spacy download en_core_web_sm
-```
+`get_filing_category(form_type)`. The ingestion filter (`daily_index.py`) is the only
+consumer — a single source of truth, no duplicated form-type lists.
 
 ### LLM First Pass
 
 A first classification pass over EVENT filings using an LLM — decides what each filing is
-really about and whether it's worth deep research, without relying on `keywords_json` as
-the primary signal (it's passed to the model only as optional context).
+really about and whether it's worth deep research, working directly off the filing's
+`clean_text`. There is no intermediate extraction/structuring stage: the pipeline is
+`SEC EDGAR → daily index → EVENT/CONTEXT classification → primary document → clean_text →
+LLM first pass → llm_filing_analysis`.
 
 Works with any OpenAI-compatible chat completions API (OpenAI, Grok/x.ai, or a local
 proxy). Configure it in `.env`:
@@ -184,7 +164,7 @@ python -m src.main --llm-first-pass
 ```
 
 For each filing, the pipeline sends a compact input (company name, ticker, form type,
-filing URL, detected Item numbers, and the first 25,000 characters of `clean_text`) and
+filing URL, and the first 20,000 characters of `clean_text`) and
 asks for strict JSON: a `primary_event_type` from a fixed list (e.g. `MERGER`,
 `TENDER_OFFER`, `BANKRUPTCY_DISTRESS`, `ROUTINE`, ...), an `importance_score` (0-100), a
 `deep_research` flag, a short summary, and text evidence. Results are stored in
@@ -216,10 +196,6 @@ otc-filing-intelligence/
 │   │   └── otc_screener_importer.py  # Parse OTC Markets Stock Screener CSV
 │   ├── filing_routing/
 │   │   └── routing.py             # get_filing_category(form_type) -> EVENT/CONTEXT/IGNORED
-│   ├── document_intelligence/
-│   │   ├── extractor.py           # Extraction functions + create_document_snapshot
-│   │   ├── patterns.py            # Regex patterns and keyword lists
-│   │   └── models.py              # DocumentSnapshot dataclass
 │   ├── llm_analysis/
 │   │   ├── client.py              # OpenAI-compatible chat completions client
 │   │   ├── prompts.py             # Event types, system prompt, user message builder
@@ -236,7 +212,6 @@ otc-filing-intelligence/
 │   ├── test_downloader.py
 │   ├── test_company_enrichment.py
 │   ├── test_otc_importer.py
-│   ├── test_document_intelligence.py
 │   ├── test_filing_routing.py
 │   └── test_llm_analysis.py
 ├── .env.example
@@ -293,24 +268,6 @@ Table `otc_securities`:
 | state          | TEXT    |                                    |
 | source         | TEXT    | "OTC Markets Stock Screener"       |
 | updated_at     | TEXT    | ISO 8601 UTC timestamp             |
-
-Table `filing_snapshots` (one row per filing, see [Document Intelligence](#document-intelligence)):
-
-| Column           | Type    | Notes                                    |
-|------------------|---------|-------------------------------------------|
-| id               | INTEGER | Primary key                               |
-| filing_filename  | TEXT    | UNIQUE — matches `filings.filename`       |
-| form_type        | TEXT    |                                            |
-| items_json       | TEXT    | JSON list, e.g. `["2.01", "5.02"]`         |
-| keywords_json    | TEXT    | JSON list of matched keywords              |
-| money_json       | TEXT    | JSON list of monetary amounts              |
-| percentages_json | TEXT    | JSON list of percentages                   |
-| dates_json       | TEXT    | JSON list of dates                         |
-| companies_json   | TEXT    | JSON list of company names                 |
-| people_json      | TEXT    | JSON list of person names                  |
-| agreements_json  | TEXT    | JSON list of named agreement types         |
-| sections_json    | TEXT    | JSON list, e.g. `["Item 2.01", "Item 5.02"]`|
-| created_at       | TEXT    | ISO 8601 UTC timestamp                     |
 
 Table `llm_filing_analysis` (one row per filing, see [LLM First Pass](#llm-first-pass)):
 

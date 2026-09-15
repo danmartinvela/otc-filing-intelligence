@@ -17,7 +17,12 @@ from .company_enrichment.sec_company_tickers import (
 )
 from .otcmarkets.otc_screener_importer import import_otc_screener_csv
 from .llm_analysis.client import LLMConfigError
-from .pipeline import get_user_agent, run_daily_pipeline, run_snapshot_pipeline, run_llm_pipeline
+from .pipeline import (
+    DEFAULT_LLM_WORKERS,
+    get_user_agent,
+    run_daily_pipeline,
+    run_llm_pipeline,
+)
 
 load_dotenv()
 
@@ -36,6 +41,16 @@ def _parse_date(value: str) -> date:
         raise argparse.ArgumentTypeError(
             f"Invalid date '{value}'. Expected format: YYYY-MM-DD"
         )
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Invalid integer '{value}'")
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1 (got {parsed})")
+    return parsed
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -79,11 +94,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Update filings.otc_tier, sec_type, country from otc_securities via ticker match",
     )
     parser.add_argument(
-        "--build-snapshots",
-        action="store_true",
-        help="Build Document Intelligence snapshots for filings with clean_text",
-    )
-    parser.add_argument(
         "--llm-first-pass",
         action="store_true",
         help="Run the LLM first pass over pending EVENT filings (requires LLM_API_KEY, "
@@ -108,6 +118,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="YYYY-MM-DD",
         default=None,
         help="With --llm-first-pass, only consider filings with date_filed <= this date",
+    )
+    parser.add_argument(
+        "--workers",
+        type=_positive_int,
+        metavar="N",
+        default=DEFAULT_LLM_WORKERS,
+        help=f"Number of concurrent LLM calls for --llm-first-pass (default: {DEFAULT_LLM_WORKERS})",
     )
     return parser
 
@@ -138,7 +155,14 @@ def _daily_pipeline_cli_progress(data: dict) -> None:
     elif stage == "content":
         if data["done"] == 1:
             logger.info("Downloading filing contents (this may take a while)...")
-        logger.info(f"  [{data['done']}/{data['total']}] {data['label']}")
+        if data.get("skipped"):
+            logger.info(f"  [{data['done']}/{data['total']}] {data['label']} (ya tenía contenido, omitido)")
+        else:
+            speed_kb = data["speed_bytes_per_sec"] / 1024
+            logger.info(
+                f"  [{data['done']}/{data['total']}] {data['label']} "
+                f"— {speed_kb:.1f} KB/s, ETA {data['eta_seconds']:.0f}s"
+            )
         if not data["ok"]:
             logger.error(f"    {data['error']}")
 
@@ -163,10 +187,22 @@ def _run_daily_pipeline(args, user_agent: str) -> None:
         logger.info("No filings matched the form filter for this date. Nothing to store.")
         return
 
-    if args.download_content and result.content_failed:
-        logger.warning(
-            f"Content download finished with {result.content_failed}/{result.total_found} failures."
+    if args.download_content:
+        downloaded_mb = result.content_bytes_downloaded / (1024 * 1024)
+        stored_mb = result.content_bytes_stored / (1024 * 1024)
+        reduction_pct = (
+            (1 - result.content_bytes_stored / result.content_bytes_downloaded) * 100
+            if result.content_bytes_downloaded else 0.0
         )
+        logger.info(
+            f"  Content: {result.content_downloaded} downloaded ({downloaded_mb:.1f} MB transferred, "
+            f"{stored_mb:.1f} MB stored, primary-document-only — {reduction_pct:.0f}% smaller), "
+            f"{result.content_skipped_existing} already had content, {result.content_failed} failed."
+        )
+        if result.content_failed:
+            logger.warning(
+                f"Content download finished with {result.content_failed}/{result.total_found} failures."
+            )
 
 
 def _run_enrich_filings() -> None:
@@ -189,24 +225,44 @@ def _run_enrich_filings_with_otc() -> None:
     logger.info(f"  Enriched: {enriched} | No OTC match: {no_match}")
 
 
-def _run_build_snapshots() -> None:
-    logger.info("Building Document Intelligence snapshots...")
-    result = run_snapshot_pipeline()
-    if result.pending == 0:
-        logger.info("  No filings pending a snapshot.")
-        return
-    skipped = result.pending - result.built - len(result.errors)
-    logger.info(f"  Snapshots built: {result.built} | Skipped (already existed): {skipped}")
-    if result.errors:
-        logger.warning(f"  {len(result.errors)} filing(s) failed during snapshot generation.")
+def _make_llm_cli_progress():
+    """One consolidated log line per completed filing, in the format asked
+    for (Analizados/Workers/Velocidad/ETA/Errores) — consistent with how
+    _daily_pipeline_cli_progress reports per-item progress elsewhere in this
+    CLI, rather than a redrawn multi-line block this CLI has no precedent for.
+    Errors is a running total across the whole batch, tracked in this
+    closure since on_progress only reports one item at a time.
+    """
+    state = {"errors": 0}
+
+    def _progress(data: dict) -> None:
+        if not data["ok"]:
+            state["errors"] += 1
+        eta = data.get("eta_seconds", 0.0)
+        eta_txt = f"{int(eta // 60)}m {int(eta % 60):02d}s"
+        detail = (
+            f"{data.get('company_name') or '?'} — {data.get('primary_event_type') or '?'} "
+            f"(score {data.get('importance_score')})"
+            if data["ok"] else f"ERROR: {data['error']}"
+        )
+        logger.info(
+            f"  Analizados {data['done']}/{data['total']} | Workers: {data.get('workers')} | "
+            f"Velocidad: {data.get('speed_per_min', 0.0):.1f} filings/min | "
+            f"ETA: {eta_txt} | Errores: {state['errors']} — {detail}"
+        )
+
+    return _progress
 
 
-def _run_llm_first_pass(limit, from_date=None, to_date=None) -> None:
-    logger.info("Running LLM first pass over pending EVENT filings...")
+def _run_llm_first_pass(limit, from_date=None, to_date=None, workers=DEFAULT_LLM_WORKERS) -> None:
+    logger.info(f"Running LLM first pass over pending EVENT filings ({workers} worker(s))...")
     date_from = from_date.strftime("%Y%m%d") if from_date else None
     date_to = to_date.strftime("%Y%m%d") if to_date else None
     try:
-        result = run_llm_pipeline(limit=limit, date_from=date_from, date_to=date_to)
+        result = run_llm_pipeline(
+            limit=limit, date_from=date_from, date_to=date_to, workers=workers,
+            on_progress=_make_llm_cli_progress(),
+        )
     except LLMConfigError as exc:
         logger.error(f"LLM first pass not run: {exc}")
         sys.exit(1)
@@ -223,13 +279,12 @@ def main() -> None:
         args.enrich_filings,
         args.import_otc_screener_csv,
         args.enrich_filings_with_otc,
-        args.build_snapshots,
         args.llm_first_pass,
     ]):
         parser.error(
             "Specify at least one action: --date, --import-sec-company-tickers, "
             "--enrich-filings, --import-otc-screener-csv, --enrich-filings-with-otc, "
-            "--build-snapshots, or --llm-first-pass."
+            "or --llm-first-pass."
         )
 
     user_agent = get_user_agent()
@@ -250,11 +305,8 @@ def main() -> None:
     if args.enrich_filings_with_otc:
         _run_enrich_filings_with_otc()
 
-    if args.build_snapshots:
-        _run_build_snapshots()
-
     if args.llm_first_pass:
-        _run_llm_first_pass(args.limit, args.from_date, args.to_date)
+        _run_llm_first_pass(args.limit, args.from_date, args.to_date, args.workers)
 
     logger.info("Done.")
 

@@ -1,8 +1,11 @@
 import json
 import sqlite3
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from src.database.db import (
     get_connection,
@@ -10,14 +13,13 @@ from src.database.db import (
     get_llm_filing_analysis,
     init_db,
     init_llm_filing_analysis_table,
-    insert_filing_snapshot,
     insert_filings,
     insert_llm_filing_analysis,
 )
 from src.database.models import Filing
-from src.document_intelligence.models import DocumentSnapshot
 from src.llm_analysis.client import LLMClient, LLMConfigError, LLMResponse
 from src.llm_analysis.first_pass import (
+    MAX_CLEAN_TEXT_CHARS,
     PARSE_ERROR,
     build_filing_input,
     parse_llm_response,
@@ -113,6 +115,47 @@ def test_parse_llm_response_empty_string():
     assert parsed["primary_event_type"] == PARSE_ERROR
 
 
+def test_parse_llm_response_none_is_a_parse_error_not_a_crash():
+    parsed = parse_llm_response(None)
+    assert parsed["primary_event_type"] == PARSE_ERROR
+
+
+# ── parse_llm_response: markdown-fenced JSON ─────────────────────────────────
+#
+# Observed for real from google/gemini-2.5-flash-lite via OpenRouter: it
+# wraps its JSON reply in a ```json ... ``` code fence even though the
+# prompt asks for raw JSON. A string starting with a backtick fails
+# json.loads with the exact same "Expecting value: line 1 column 1 (char 0)"
+# error as an empty string — without stripping the fence, every response
+# from a model that does this gets misreported as PARSE_ERROR.
+
+
+def test_parse_llm_response_strips_json_language_tagged_fence():
+    raw = '```json\n{"primary_event_type": "ROUTINE", "importance_score": 10}\n```'
+    parsed = parse_llm_response(raw)
+    assert parsed["primary_event_type"] == "ROUTINE"
+    assert parsed["importance_score"] == 10
+
+
+def test_parse_llm_response_strips_untagged_fence():
+    raw = '```\n{"primary_event_type": "MERGER"}\n```'
+    parsed = parse_llm_response(raw)
+    assert parsed["primary_event_type"] == "MERGER"
+
+
+def test_parse_llm_response_still_handles_unfenced_json():
+    """Most providers return raw JSON — the fix must not regress that path."""
+    raw = '{"primary_event_type": "BANKRUPTCY_DISTRESS"}'
+    parsed = parse_llm_response(raw)
+    assert parsed["primary_event_type"] == "BANKRUPTCY_DISTRESS"
+
+
+def test_parse_llm_response_fenced_but_invalid_json_is_still_a_parse_error():
+    raw = '```json\nnot actually json\n```'
+    parsed = parse_llm_response(raw)
+    assert parsed["primary_event_type"] == PARSE_ERROR
+
+
 # ── build_filing_input ───────────────────────────────────────────────────────
 
 
@@ -128,7 +171,7 @@ def test_build_filing_input_truncates_clean_text():
         "keywords_json": '["Nasdaq"]',
     }
     filing_input = build_filing_input(filing)
-    assert len(filing_input["clean_text"]) == 25000
+    assert len(filing_input["clean_text"]) == MAX_CLEAN_TEXT_CHARS
     assert filing_input["items"] == ["2.01"]
     assert filing_input["keywords"] == ["Nasdaq"]
 
@@ -416,16 +459,23 @@ def test_get_event_filings_needing_llm_analysis_respects_limit(tmp_path):
     assert len(pending) == 2
 
 
-def test_get_event_filings_needing_llm_analysis_includes_snapshot_items(tmp_path):
+def test_get_event_filings_needing_llm_analysis_has_no_document_snapshots_dependency(tmp_path):
+    """Document Snapshots was removed entirely — the LLM selection query
+    must feed off filings.clean_text alone, with no join or column tying it
+    to a filing_snapshots table (which no longer even exists for a fresh DB)."""
     db_path = tmp_path / "test.db"
     init_db(db_path)
-    insert_filings([_make_filing("event.txt")], db_path)
-    insert_filing_snapshot(
-        DocumentSnapshot(filename="event.txt", form_type="8-K", items=["2.01"]),
-        db_path,
-    )
+    insert_filings([_make_filing("event.txt", clean_text="Item 2.01 details.")], db_path)
+
+    with get_connection(db_path) as conn:
+        tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "filing_snapshots" not in tables
+
     pending = get_event_filings_needing_llm_analysis(db_path=db_path)
-    assert pending[0]["items_json"] == '["2.01"]'
+    assert pending[0]["filename"] == "event.txt"
+    assert pending[0]["clean_text"] == "Item 2.01 details."
+    assert "items_json" not in pending[0]
+    assert "keywords_json" not in pending[0]
 
 
 # ── run_first_pass orchestration ─────────────────────────────────────────────
@@ -479,3 +529,327 @@ def test_run_first_pass_counts_errors_without_raising(mock_client_cls, tmp_path,
     assert processed == 0
     assert errors == 1
     assert get_llm_filing_analysis("event.txt", db_path) is None
+
+
+# ── LLMClient retry/backoff ──────────────────────────────────────────────────
+
+
+def _http_error_response(status_code, retry_after=None):
+    """A mock requests.Response whose raise_for_status() raises an HTTPError
+    carrying that status code — like the real requests library does."""
+    response = MagicMock()
+    response.status_code = status_code
+    response.headers = {"Retry-After": retry_after} if retry_after else {}
+    error = requests.HTTPError(f"{status_code} error")
+    error.response = response
+    response.raise_for_status.side_effect = error
+    return response
+
+
+def _success_response(content="ok"):
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {"choices": [{"message": {"content": content}}]}
+    return response
+
+
+@patch("src.llm_analysis.client.time.sleep")
+@patch("src.llm_analysis.client.requests.post")
+def test_chat_completion_retries_on_429_then_succeeds(mock_post, mock_sleep):
+    mock_post.side_effect = [_http_error_response(429), _success_response()]
+    client = LLMClient(api_key="k", base_url="https://api.example.com/v1", model="m")
+
+    result = client.chat_completion("sp", "um")
+
+    assert result.content == "ok"
+    assert mock_post.call_count == 2
+    mock_sleep.assert_called_once()
+
+
+@patch("src.llm_analysis.client.time.sleep")
+@patch("src.llm_analysis.client.requests.post")
+def test_chat_completion_honors_retry_after_header(mock_post, mock_sleep):
+    mock_post.side_effect = [_http_error_response(429, retry_after="5"), _success_response()]
+    client = LLMClient(api_key="k", base_url="https://api.example.com/v1", model="m")
+
+    client.chat_completion("sp", "um")
+
+    mock_sleep.assert_called_once_with(5.0)
+
+
+@patch("src.llm_analysis.client.time.sleep")
+@patch("src.llm_analysis.client.requests.post")
+def test_chat_completion_retry_after_header_is_capped(mock_post, mock_sleep):
+    """A provider asking for an absurd Retry-After must not stall the batch."""
+    mock_post.side_effect = [_http_error_response(429, retry_after="9999"), _success_response()]
+    client = LLMClient(api_key="k", base_url="https://api.example.com/v1", model="m")
+
+    client.chat_completion("sp", "um")
+
+    mock_sleep.assert_called_once_with(30.0)
+
+
+@patch("src.llm_analysis.client.time.sleep")
+@patch("src.llm_analysis.client.requests.post")
+def test_chat_completion_retries_on_5xx_then_succeeds(mock_post, mock_sleep):
+    mock_post.side_effect = [_http_error_response(503), _http_error_response(502), _success_response()]
+    client = LLMClient(api_key="k", base_url="https://api.example.com/v1", model="m")
+
+    result = client.chat_completion("sp", "um")
+
+    assert result.content == "ok"
+    assert mock_post.call_count == 3
+    assert mock_sleep.call_count == 2
+
+
+@patch("src.llm_analysis.client.time.sleep")
+@patch("src.llm_analysis.client.requests.post")
+def test_chat_completion_retries_on_timeout_then_succeeds(mock_post, mock_sleep):
+    mock_post.side_effect = [requests.exceptions.Timeout("timed out"), _success_response()]
+    client = LLMClient(api_key="k", base_url="https://api.example.com/v1", model="m")
+
+    result = client.chat_completion("sp", "um")
+
+    assert result.content == "ok"
+    assert mock_post.call_count == 2
+
+
+@patch("src.llm_analysis.client.time.sleep")
+@patch("src.llm_analysis.client.requests.post")
+def test_chat_completion_retries_on_connection_error_then_succeeds(mock_post, mock_sleep):
+    mock_post.side_effect = [requests.exceptions.ConnectionError("connection reset by peer"), _success_response()]
+    client = LLMClient(api_key="k", base_url="https://api.example.com/v1", model="m")
+
+    result = client.chat_completion("sp", "um")
+
+    assert result.content == "ok"
+    assert mock_post.call_count == 2
+
+
+@patch("src.llm_analysis.client.time.sleep")
+@patch("src.llm_analysis.client.requests.post")
+def test_chat_completion_does_not_retry_4xx_other_than_429(mock_post, mock_sleep):
+    mock_post.return_value = _http_error_response(400)
+    client = LLMClient(api_key="k", base_url="https://api.example.com/v1", model="m")
+
+    with pytest.raises(requests.HTTPError):
+        client.chat_completion("sp", "um")
+
+    assert mock_post.call_count == 1
+    mock_sleep.assert_not_called()
+
+
+@patch("src.llm_analysis.client.time.sleep")
+@patch("src.llm_analysis.client.requests.post")
+def test_chat_completion_gives_up_after_max_retries(mock_post, mock_sleep):
+    mock_post.return_value = _http_error_response(503)
+    client = LLMClient(api_key="k", base_url="https://api.example.com/v1", model="m")
+
+    with pytest.raises(requests.HTTPError):
+        client.chat_completion("sp", "um")
+
+    assert mock_post.call_count == 4  # 1 initial attempt + 3 retries
+
+
+# ── run_first_pass concurrency ───────────────────────────────────────────────
+
+
+def _install_real_db(monkeypatch, db_path):
+    """Point first_pass's module-level DB calls at a throwaway tmp_path DB
+    instead of the real data/filings.db, while keeping the real SQL (no
+    behavior is mocked away, only which file it reads/writes)."""
+    monkeypatch.setattr(
+        "src.llm_analysis.first_pass.get_event_filings_needing_llm_analysis",
+        lambda **kwargs: get_event_filings_needing_llm_analysis(db_path=db_path, **kwargs),
+    )
+    monkeypatch.setattr(
+        "src.llm_analysis.first_pass.insert_llm_filing_analysis",
+        lambda **kwargs: insert_llm_filing_analysis(db_path=db_path, **kwargs),
+    )
+
+
+def test_run_first_pass_rejects_invalid_worker_count():
+    with pytest.raises(ValueError):
+        run_first_pass(workers=0)
+
+
+@patch("src.llm_analysis.first_pass.LLMClient")
+def test_run_first_pass_runs_calls_concurrently(mock_client_cls, tmp_path, monkeypatch):
+    """4 filings whose LLM call each sleeps 0.2s, run with workers=4, must
+    finish in well under 4 * 0.2s — proving the calls actually overlap
+    instead of the old one-at-a-time loop."""
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    insert_filings([_make_filing(f"event{i}.txt") for i in range(4)], db_path)
+    _install_real_db(monkeypatch, db_path)
+
+    call_duration = 0.2
+
+    def _slow_chat_completion(system_prompt, user_message):
+        time.sleep(call_duration)
+        return LLMResponse(content=json.dumps({"primary_event_type": "ROUTINE"}), raw_response={})
+
+    mock_client = MagicMock()
+    mock_client.provider = "openai-compatible"
+    mock_client.model = "test-model"
+    mock_client.chat_completion.side_effect = _slow_chat_completion
+    mock_client_cls.return_value = mock_client
+
+    started = time.monotonic()
+    processed, errors = run_first_pass(limit=10, workers=4)
+    elapsed = time.monotonic() - started
+
+    assert processed == 4
+    assert errors == 0
+    assert elapsed < call_duration * 2.5
+
+
+@patch("src.llm_analysis.first_pass.LLMClient")
+def test_run_first_pass_never_exceeds_configured_workers(mock_client_cls, tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    insert_filings([_make_filing(f"event{i}.txt") for i in range(10)], db_path)
+    _install_real_db(monkeypatch, db_path)
+
+    lock = threading.Lock()
+    state = {"current": 0, "max_seen": 0}
+
+    def _tracking_chat_completion(system_prompt, user_message):
+        with lock:
+            state["current"] += 1
+            state["max_seen"] = max(state["max_seen"], state["current"])
+        time.sleep(0.05)
+        with lock:
+            state["current"] -= 1
+        return LLMResponse(content=json.dumps({"primary_event_type": "ROUTINE"}), raw_response={})
+
+    mock_client = MagicMock()
+    mock_client.provider = "openai-compatible"
+    mock_client.model = "test-model"
+    mock_client.chat_completion.side_effect = _tracking_chat_completion
+    mock_client_cls.return_value = mock_client
+
+    processed, errors = run_first_pass(limit=10, workers=3)
+
+    assert processed == 10
+    assert errors == 0
+    assert state["max_seen"] == 3
+
+
+@patch("src.llm_analysis.first_pass.LLMClient")
+def test_run_first_pass_writes_db_only_from_calling_thread(mock_client_cls, tmp_path, monkeypatch):
+    """SQLite writes must be serialized on the thread that called
+    run_first_pass, never on a worker thread — this is what avoids
+    'database is locked' without needing an explicit lock."""
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    insert_filings([_make_filing(f"event{i}.txt") for i in range(6)], db_path)
+    monkeypatch.setattr(
+        "src.llm_analysis.first_pass.get_event_filings_needing_llm_analysis",
+        lambda **kwargs: get_event_filings_needing_llm_analysis(db_path=db_path, **kwargs),
+    )
+
+    write_thread_ids = []
+
+    def _tracking_insert(**kwargs):
+        write_thread_ids.append(threading.current_thread().ident)
+        return insert_llm_filing_analysis(db_path=db_path, **kwargs)
+
+    monkeypatch.setattr("src.llm_analysis.first_pass.insert_llm_filing_analysis", _tracking_insert)
+
+    mock_client = MagicMock()
+    mock_client.provider = "openai-compatible"
+    mock_client.model = "test-model"
+    mock_client.chat_completion.return_value = LLMResponse(
+        content=json.dumps({"primary_event_type": "ROUTINE"}), raw_response={},
+    )
+    mock_client_cls.return_value = mock_client
+
+    main_thread_id = threading.current_thread().ident
+    processed, errors = run_first_pass(limit=10, workers=4)
+
+    assert processed == 6
+    assert len(write_thread_ids) == 6
+    assert all(tid == main_thread_id for tid in write_thread_ids)
+
+
+@patch("src.llm_analysis.first_pass.LLMClient")
+def test_run_first_pass_one_failure_does_not_stop_the_batch(mock_client_cls, tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    insert_filings([_make_filing(f"event{i}.txt") for i in range(5)], db_path)
+    _install_real_db(monkeypatch, db_path)
+
+    lock = threading.Lock()
+    counter = {"n": 0}
+
+    def _flaky_chat_completion(system_prompt, user_message):
+        with lock:
+            counter["n"] += 1
+            n = counter["n"]
+        if n == 3:
+            raise RuntimeError("simulated failure")
+        return LLMResponse(content=json.dumps({"primary_event_type": "ROUTINE"}), raw_response={})
+
+    mock_client = MagicMock()
+    mock_client.provider = "openai-compatible"
+    mock_client.model = "test-model"
+    mock_client.chat_completion.side_effect = _flaky_chat_completion
+    mock_client_cls.return_value = mock_client
+
+    processed, errors = run_first_pass(limit=10, workers=3)
+
+    assert processed == 4
+    assert errors == 1
+
+
+@patch("src.llm_analysis.first_pass.LLMClient")
+def test_run_first_pass_progress_info_includes_timing_and_workers(mock_client_cls, tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    insert_filings([_make_filing("event.txt")], db_path)
+    _install_real_db(monkeypatch, db_path)
+
+    mock_client = MagicMock()
+    mock_client.provider = "openai-compatible"
+    mock_client.model = "test-model"
+    mock_client.chat_completion.return_value = LLMResponse(
+        content=json.dumps({"primary_event_type": "ROUTINE", "importance_score": 5}), raw_response={},
+    )
+    mock_client_cls.return_value = mock_client
+
+    progress_calls = []
+    run_first_pass(limit=10, workers=2, on_progress=lambda *args: progress_calls.append(args))
+
+    assert len(progress_calls) == 1
+    done, total, ok, error, info = progress_calls[0]
+    assert (done, total, ok, error) == (1, 1, True, None)
+    assert info["workers"] == 2
+    assert "elapsed_seconds" in info
+    assert "speed_per_min" in info
+    assert "eta_seconds" in info
+    assert info["company_name"] == "Test Corp"
+
+
+@patch("src.llm_analysis.first_pass.LLMClient")
+def test_run_first_pass_progress_info_present_on_failure_too(mock_client_cls, tmp_path, monkeypatch):
+    """Timing/workers info must be available even for a failed call, since
+    the CLI/dashboard progress line reports ETA and error count together."""
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    insert_filings([_make_filing("event.txt")], db_path)
+    _install_real_db(monkeypatch, db_path)
+
+    mock_client = MagicMock()
+    mock_client.chat_completion.side_effect = RuntimeError("boom")
+    mock_client_cls.return_value = mock_client
+
+    progress_calls = []
+    run_first_pass(limit=10, workers=2, on_progress=lambda *args: progress_calls.append(args))
+
+    assert len(progress_calls) == 1
+    done, total, ok, error, info = progress_calls[0]
+    assert ok is False
+    assert error == "boom"
+    assert info["workers"] == 2
+    assert "eta_seconds" in info

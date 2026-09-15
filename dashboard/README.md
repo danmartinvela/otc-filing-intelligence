@@ -38,9 +38,10 @@ pipeline, ver el README principal del proyecto).
 - **Resumen Ejecutivo** — KPIs generales, eventos por categoría, evolución
   diaria y distribución de importance score.
 - **Explorador de Eventos** — tabla completa de filings EVENT con filtros
-  (fecha, ticker, empresa, formulario, categoría del evento, score mínimo,
-  deep research, OTC tier), orden y paginación. Filtrado, orden y paginación
-  se resuelven en SQL, no en pandas, para escalar a miles de filas.
+  (fecha, ticker, empresa, formulario), orden y paginación. La tabla sigue
+  mostrando evento principal, importance score y deep research por fila,
+  aunque ya no se pueda filtrar por ellos desde aquí. Filtrado, orden y
+  paginación se resuelven en SQL, no en pandas, para escalar a miles de filas.
 - **Detalle del Filing** — toda la información de un filing: datos generales,
   análisis IA, extracción estructurada (Document Intelligence), evidencias y
   texto completo. Se llega aquí seleccionando una fila del Explorador o

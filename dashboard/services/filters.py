@@ -23,12 +23,7 @@ class EventFilters:
     date_from: Optional[str] = None  # YYYYMMDD
     date_to: Optional[str] = None  # YYYYMMDD
     ticker: str = ""
-    company_name: str = ""
     form_types: List[str] = field(default_factory=list)
-    event_types: List[str] = field(default_factory=list)
-    min_importance_score: int = 0
-    deep_research_only: bool = False
-    otc_tiers: List[str] = field(default_factory=list)
 
 
 def build_where_clause(filters: EventFilters) -> Tuple[str, List]:
@@ -45,26 +40,10 @@ def build_where_clause(filters: EventFilters) -> Tuple[str, List]:
     if filters.ticker:
         clauses.append("f.ticker LIKE ?")
         params.append(f"%{filters.ticker.strip().upper()}%")
-    if filters.company_name:
-        clauses.append("f.company_name LIKE ?")
-        params.append(f"%{filters.company_name.strip()}%")
     if filters.form_types:
         placeholders = ",".join("?" for _ in filters.form_types)
         clauses.append(f"f.form_type IN ({placeholders})")
         params.extend(filters.form_types)
-    if filters.event_types:
-        placeholders = ",".join("?" for _ in filters.event_types)
-        clauses.append(f"l.primary_event_type IN ({placeholders})")
-        params.extend(filters.event_types)
-    if filters.min_importance_score > 0:
-        clauses.append("l.importance_score >= ?")
-        params.append(filters.min_importance_score)
-    if filters.deep_research_only:
-        clauses.append("l.deep_research = 1")
-    if filters.otc_tiers:
-        placeholders = ",".join("?" for _ in filters.otc_tiers)
-        clauses.append(f"f.otc_tier IN ({placeholders})")
-        params.extend(filters.otc_tiers)
 
     return (" AND " + " AND ".join(clauses)) if clauses else "", params
 

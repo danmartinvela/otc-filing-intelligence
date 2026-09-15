@@ -1,8 +1,11 @@
 import json
 import logging
-from typing import Callable, Dict, List, Optional
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable, Dict, List, Optional, Tuple
 
-from .client import LLMClient
+from .client import LLMClient, LLMResponse
 from .prompts import SYSTEM_PROMPT, build_user_message
 from ..database.db import (
     get_event_filings_needing_llm_analysis,
@@ -11,8 +14,9 @@ from ..database.db import (
 
 logger = logging.getLogger(__name__)
 
-MAX_CLEAN_TEXT_CHARS = 25000
+MAX_CLEAN_TEXT_CHARS = 20000
 PARSE_ERROR = "PARSE_ERROR"
+DEFAULT_WORKERS = 5
 
 
 def _load_json_list(raw: Optional[str]) -> List[str]:
@@ -58,6 +62,23 @@ def _parse_error_result(reason: str) -> Dict:
     }
 
 
+_MARKDOWN_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
+
+
+def _strip_markdown_fence(raw: str) -> str:
+    """Some providers (observed: Gemini via OpenRouter) wrap an otherwise
+    valid JSON response in a ```json ... ``` code fence even though the
+    prompt asks for raw JSON — a string starting with a backtick fails
+    json.loads with the same "Expecting value" error as an empty string,
+    so every response from such a model would otherwise be misreported as
+    PARSE_ERROR. Strips the fence if present; leaves already-raw JSON (the
+    normal case for most providers) untouched.
+    """
+    stripped = raw.strip()
+    match = _MARKDOWN_FENCE_RE.match(stripped)
+    return match.group(1).strip() if match else stripped
+
+
 def parse_llm_response(raw_content: str) -> Dict:
     """Parse the LLM's JSON response. Never raises — falls back to PARSE_ERROR.
 
@@ -65,7 +86,7 @@ def parse_llm_response(raw_content: str) -> Dict:
     market_impact, next_step, and key_entities.
     """
     try:
-        parsed = json.loads(raw_content)
+        parsed = json.loads(_strip_markdown_fence(raw_content or ""))
     except (TypeError, ValueError) as exc:
         logger.error(f"Failed to parse LLM response as JSON: {exc}")
         return _parse_error_result(f"JSON parse error: {exc}")
@@ -73,6 +94,22 @@ def parse_llm_response(raw_content: str) -> Dict:
         logger.error(f"LLM response was valid JSON but not an object: {raw_content!r}")
         return _parse_error_result("JSON parse error: response was not a JSON object")
     return parsed
+
+
+def _call_llm(client: LLMClient, filing: Dict) -> Tuple[Dict, Optional[LLMResponse], Optional[str]]:
+    """Runs on a worker thread: builds the prompt and makes the one HTTP call
+    for this filing. Never raises — always returns (filing, response, error),
+    so a future's .result() can't raise either and one bad filing can't take
+    down the ThreadPoolExecutor batch or leave a future unresolved. Nothing
+    here touches SQLite — that stays on the calling thread (see run_first_pass).
+    """
+    filing_input = build_filing_input(filing)
+    user_message = build_user_message(filing_input)
+    try:
+        response = client.chat_completion(SYSTEM_PROMPT, user_message)
+        return filing, response, None
+    except Exception as exc:
+        return filing, None, str(exc)
 
 
 def run_first_pass(
@@ -83,6 +120,7 @@ def run_first_pass(
     status: str = "pending",
     order: str = "recent",
     category: Optional[str] = None,
+    workers: int = DEFAULT_WORKERS,
     on_progress: Optional[Callable[[int, int, bool, Optional[str], Optional[Dict]], None]] = None,
 ) -> tuple[int, int]:
     """Run the LLM first pass over a selection of EVENT filings. Returns (processed, errors).
@@ -94,51 +132,83 @@ def run_first_pass(
     disagree). None of the new parameters change behavior when omitted:
     defaults match the original "all pending EVENT filings" selection.
 
+    workers: how many filings may have their LLM HTTP call in flight at
+    once, via a ThreadPoolExecutor — this work is I/O-bound (waiting on the
+    network), so threads are the right tool; no multiprocessing, no asyncio
+    rewrite. Every HTTP call happens on a worker thread (see _call_llm).
+    Parsing the response and writing it to SQLite (insert_llm_filing_analysis)
+    always happens back on this calling thread, one result at a time, so
+    there is never more than one DB write in flight and no lock/queue is
+    needed to prevent "database is locked" — there's simply never a second
+    writer to contend with.
+
     on_progress, if given, is called once per filing as
-    on_progress(done, total, ok, error, info) — after the attempt. info is
+    on_progress(done, total, ok, error, info) — after the attempt, in
+    completion order (not the original selection order, since faster calls
+    can finish before slower ones started earlier). info is always populated
+    with {"workers", "elapsed_seconds", "speed_per_min", "eta_seconds"}, plus
     {"company_name", "primary_event_type", "importance_score", "deep_research"}
-    on success, None on failure. Optional and unused by the CLI, so passing
-    nothing keeps this function's behavior exactly as before.
+    on success. Optional and unused by the CLI, so passing nothing keeps
+    this function's behavior exactly as before (modulo the completion-order
+    change, which is inherent to running concurrently).
     """
+    if workers < 1:
+        raise ValueError(f"workers must be >= 1 (got {workers})")
+
     client = LLMClient()
     kwargs = dict(limit=limit, date_from=date_from, date_to=date_to, form_types=form_types, status=status, order=order)
     if category is not None:
         kwargs["category"] = category
     pending = get_event_filings_needing_llm_analysis(**kwargs)
     total = len(pending)
-    logger.info(f"LLM first pass: {total} filing(s) pending.")
+    logger.info(f"LLM first pass: {total} filing(s) pending ({workers} worker(s)).")
 
     processed = errors = 0
-    for idx, filing in enumerate(pending, start=1):
-        filing_input = build_filing_input(filing)
-        user_message = build_user_message(filing_input)
-        error: Optional[str] = None
-        try:
-            response = client.chat_completion(SYSTEM_PROMPT, user_message)
-        except Exception as exc:
-            logger.error(f"LLM call failed for '{filing['filename']}': {exc}")
-            errors += 1
-            error = str(exc)
-            if on_progress:
-                on_progress(idx, total, False, error, None)
-            continue
+    if total == 0:
+        return processed, errors
 
-        parsed = parse_llm_response(response.content)
-        insert_llm_filing_analysis(
-            filing_filename=filing["filename"],
-            provider=client.provider,
-            model=client.model,
-            parsed=parsed,
-            raw_response=response.content,
-        )
-        processed += 1
-        if on_progress:
-            info = {
-                "company_name": filing.get("company_name"),
-                "primary_event_type": parsed.get("primary_event_type"),
-                "importance_score": parsed.get("importance_score"),
-                "deep_research": bool(parsed.get("deep_research")),
-            }
-            on_progress(idx, total, True, None, info)
+    started = time.monotonic()
+
+    def _timing_fields(done: int) -> Dict:
+        elapsed = time.monotonic() - started
+        speed_per_min = (done / elapsed) * 60 if elapsed > 0 else 0.0
+        avg_seconds_per_item = elapsed / done if done else 0.0
+        return {
+            "workers": workers,
+            "elapsed_seconds": elapsed,
+            "speed_per_min": speed_per_min,
+            "eta_seconds": avg_seconds_per_item * (total - done),
+        }
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(_call_llm, client, filing) for filing in pending]
+        for done, future in enumerate(as_completed(futures), start=1):
+            filing, response, error = future.result()
+            info = _timing_fields(done)
+
+            if error is not None:
+                logger.error(f"LLM call failed for '{filing['filename']}': {error}")
+                errors += 1
+                if on_progress:
+                    on_progress(done, total, False, error, info)
+                continue
+
+            parsed = parse_llm_response(response.content)
+            insert_llm_filing_analysis(
+                filing_filename=filing["filename"],
+                provider=client.provider,
+                model=client.model,
+                parsed=parsed,
+                raw_response=response.content,
+            )
+            processed += 1
+            if on_progress:
+                info.update({
+                    "company_name": filing.get("company_name"),
+                    "primary_event_type": parsed.get("primary_event_type"),
+                    "importance_score": parsed.get("importance_score"),
+                    "deep_research": bool(parsed.get("deep_research")),
+                })
+                on_progress(done, total, True, None, info)
 
     return processed, errors

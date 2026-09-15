@@ -3,7 +3,7 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from .models import Filing
 from ..filing_routing.routing import EVENT, get_filing_category
@@ -33,6 +33,18 @@ CREATE TABLE IF NOT EXISTS filings (
 )
 """
 
+# Dashboard "Detalle del Filing" on-demand search (ticker/company_name
+# prefix, case-insensitive) needs these to stay fast — measured ~2.4s-6.5s
+# for a specific ticker on a full scan vs. ~10ms with them. NOCASE (not
+# plain BINARY) is what lets SQLite use the index for a case-insensitive
+# LIKE 'prefix%' range scan; a plain index couldn't be used for that.
+_CREATE_TICKER_NOCASE_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_filings_ticker_nocase ON filings(ticker COLLATE NOCASE)"
+)
+_CREATE_COMPANY_NAME_NOCASE_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_filings_company_name_nocase ON filings(company_name COLLATE NOCASE)"
+)
+
 _CREATE_COMPANIES_SQL = """
 CREATE TABLE IF NOT EXISTS companies (
     cik          TEXT PRIMARY KEY,
@@ -55,24 +67,6 @@ CREATE TABLE IF NOT EXISTS otc_securities (
     country        TEXT,
     source         TEXT,
     updated_at     TEXT NOT NULL
-)
-"""
-
-_CREATE_FILING_SNAPSHOTS_SQL = """
-CREATE TABLE IF NOT EXISTS filing_snapshots (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    filing_filename  TEXT NOT NULL UNIQUE,
-    form_type        TEXT,
-    items_json       TEXT,
-    keywords_json    TEXT,
-    money_json       TEXT,
-    percentages_json TEXT,
-    dates_json       TEXT,
-    companies_json   TEXT,
-    people_json      TEXT,
-    agreements_json  TEXT,
-    sections_json    TEXT,
-    created_at       TEXT NOT NULL
 )
 """
 
@@ -179,11 +173,6 @@ def init_otc_securities_table(db_path: Path = DB_PATH) -> None:
         conn.execute(_CREATE_OTC_SECURITIES_SQL)
 
 
-def init_filing_snapshots_table(db_path: Path = DB_PATH) -> None:
-    with get_connection(db_path) as conn:
-        conn.execute(_CREATE_FILING_SNAPSHOTS_SQL)
-
-
 def init_llm_filing_analysis_table(db_path: Path = DB_PATH) -> None:
     with get_connection(db_path) as conn:
         conn.execute(_CREATE_LLM_FILING_ANALYSIS_SQL)
@@ -196,9 +185,10 @@ def init_db(db_path: Path = DB_PATH) -> None:
         conn.execute(_CREATE_FILINGS_SQL)
         _add_missing_columns(conn, "filings", _FILINGS_OPTIONAL_COLUMNS)
         _backfill_filing_categories(conn)
+        conn.execute(_CREATE_TICKER_NOCASE_INDEX_SQL)
+        conn.execute(_CREATE_COMPANY_NAME_NOCASE_INDEX_SQL)
         conn.execute(_CREATE_COMPANIES_SQL)
         conn.execute(_CREATE_OTC_SECURITIES_SQL)
-        conn.execute(_CREATE_FILING_SNAPSHOTS_SQL)
         conn.execute(_CREATE_LLM_FILING_ANALYSIS_SQL)
         _add_missing_columns(conn, "llm_filing_analysis", _LLM_FILING_ANALYSIS_OPTIONAL_COLUMNS)
     logger.debug(f"Database ready at {db_path}")
@@ -260,6 +250,25 @@ def update_filing_content(
             "UPDATE filings SET raw_text = ?, clean_text = ? WHERE filename = ?",
             (raw_text, clean_text, filename),
         )
+
+
+def get_filenames_with_content(filenames: List[str], db_path: Path = DB_PATH) -> Set[str]:
+    """Return the subset of `filenames` that already have non-empty clean_text.
+
+    Used to skip re-downloading filing content that was already fetched in a
+    previous run of the same date — `filename` already has a unique index, so
+    this is a lookup, not a table scan.
+    """
+    if not filenames:
+        return set()
+    placeholders = ",".join("?" for _ in filenames)
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT filename FROM filings WHERE filename IN ({placeholders}) "
+            "AND clean_text IS NOT NULL AND clean_text != ''",
+            filenames,
+        ).fetchall()
+    return {row["filename"] for row in rows}
 
 
 def enrich_filings_with_tickers(db_path: Path = DB_PATH) -> tuple[int, int]:
@@ -389,74 +398,6 @@ def enrich_filings_with_otc(db_path: Path = DB_PATH) -> tuple[int, int]:
     return enriched, no_match
 
 
-# ── Document Intelligence snapshots ──────────────────────────────────────────
-
-def get_filings_needing_snapshot(db_path: Path = DB_PATH) -> List[Dict]:
-    """Return EVENT filings that have clean_text but no snapshot yet.
-
-    Document Intelligence only processes EVENT filings — CONTEXT and IGNORED
-    filings are stored but never analyzed on their own.
-    """
-    with get_connection(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT filename, form_type, clean_text FROM filings
-            WHERE clean_text IS NOT NULL AND clean_text != ''
-              AND filing_category = ?
-              AND filename NOT IN (SELECT filing_filename FROM filing_snapshots)
-            """,
-            (EVENT,),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-
-def insert_filing_snapshot(snapshot, db_path: Path = DB_PATH) -> bool:
-    """Persist a DocumentSnapshot. Returns True if inserted, False if it already existed."""
-    now = datetime.now(timezone.utc).isoformat()
-    with get_connection(db_path) as conn:
-        cursor = conn.execute(
-            """
-            INSERT OR IGNORE INTO filing_snapshots
-                (filing_filename, form_type, items_json, keywords_json, money_json,
-                 percentages_json, dates_json, companies_json, people_json,
-                 agreements_json, sections_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                snapshot.filename,
-                snapshot.form_type,
-                json.dumps(snapshot.items),
-                json.dumps(snapshot.keywords),
-                json.dumps(snapshot.money),
-                json.dumps(snapshot.percentages),
-                json.dumps(snapshot.dates),
-                json.dumps(snapshot.companies),
-                json.dumps(snapshot.people),
-                json.dumps(snapshot.agreements),
-                json.dumps(snapshot.sections),
-                now,
-            ),
-        )
-        return cursor.rowcount == 1
-
-
-def get_filing_snapshot(filename: str, db_path: Path = DB_PATH) -> Optional[Dict]:
-    """Return a stored snapshot by filing filename, with JSON fields decoded, or None."""
-    with get_connection(db_path) as conn:
-        row = conn.execute(
-            "SELECT * FROM filing_snapshots WHERE filing_filename = ?", (filename,)
-        ).fetchone()
-    if row is None:
-        return None
-    data = dict(row)
-    for field in (
-        "items", "keywords", "money", "percentages", "dates",
-        "companies", "people", "agreements", "sections",
-    ):
-        data[field] = json.loads(data.pop(f"{field}_json"))
-    return data
-
-
 # ── LLM first-pass analysis ──────────────────────────────────────────────────
 
 def _llm_selection_where(
@@ -510,16 +451,13 @@ def get_event_filings_needing_llm_analysis(
     the original behavior exactly, so `--llm-first-pass --limit N` alone is
     unchanged.
 
-    Includes items_json from filing_snapshots (if a snapshot already exists) so the
-    LLM prompt can reference detected Item numbers.
+    The LLM works directly off f.clean_text — no other table feeds its input.
     """
     where, params = _llm_selection_where(category, date_from, date_to, form_types, status)
     direction = "ASC" if order == "oldest" else "DESC"
     query = f"""
-        SELECT f.filename, f.company_name, f.ticker, f.form_type, f.filing_url,
-               f.clean_text, s.items_json, s.keywords_json
+        SELECT f.filename, f.company_name, f.ticker, f.form_type, f.filing_url, f.clean_text
         FROM filings f
-        LEFT JOIN filing_snapshots s ON s.filing_filename = f.filename
         WHERE {where}
         ORDER BY f.date_filed {direction}
     """

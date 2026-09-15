@@ -14,8 +14,8 @@ from config import CACHE_TTL_SECONDS, IMPORTANCE_THRESHOLD, TOP_COMPANIES_LIMIT
 _CACHE = st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
 
 _EVENT_LIST_COLUMNS = """
-    f.filename, f.date_filed, f.company_name, f.ticker, f.form_type, f.otc_tier,
-    l.primary_event_type, l.importance_score, l.deep_research, l.market_impact
+    f.filename, f.date_filed, f.company_name, f.ticker, f.form_type,
+    l.primary_event_type, l.importance_score, l.deep_research
 """
 _EVENT_LIST_FROM = """
     FROM filings f
@@ -96,11 +96,7 @@ def get_daily_filing_counts(_conn: sqlite3.Connection) -> pd.DataFrame:
 @_CACHE
 def get_importance_score_distribution(_conn: sqlite3.Connection) -> pd.DataFrame:
     return pd.read_sql_query(
-        """
-        SELECT importance_score
-        FROM llm_filing_analysis
-        WHERE importance_score IS NOT NULL
-        """,
+        "SELECT importance_score FROM llm_filing_analysis WHERE importance_score IS NOT NULL",
         _conn,
     )
 
@@ -173,23 +169,14 @@ def get_event_date_bounds(_conn: sqlite3.Connection) -> Dict[str, Optional[str]]
 
 @_CACHE
 def get_filter_options(_conn: sqlite3.Connection) -> Dict[str, List[str]]:
-    """Distinct values for the Explorador's multiselect filters, EVENT filings only."""
+    """Distinct values for the Explorador's/Procesar filings' form-type
+    multiselects, EVENT filings only."""
     form_types = _conn.execute(
         "SELECT DISTINCT form_type FROM filings WHERE filing_category = 'EVENT' "
         "AND form_type IS NOT NULL ORDER BY form_type"
     ).fetchall()
-    otc_tiers = _conn.execute(
-        "SELECT DISTINCT otc_tier FROM filings WHERE filing_category = 'EVENT' "
-        "AND otc_tier IS NOT NULL ORDER BY otc_tier"
-    ).fetchall()
-    event_types = _conn.execute(
-        "SELECT DISTINCT primary_event_type FROM llm_filing_analysis "
-        "WHERE primary_event_type IS NOT NULL ORDER BY primary_event_type"
-    ).fetchall()
     return {
         "form_types": [r["form_type"] for r in form_types],
-        "otc_tiers": [r["otc_tier"] for r in otc_tiers],
-        "event_types": [r["primary_event_type"] for r in event_types],
     }
 
 
@@ -200,34 +187,52 @@ def get_events_count(_conn: sqlite3.Connection, where_extra: str, params: Sequen
 
 
 @_CACHE
-def get_all_event_filings_lite(_conn: sqlite3.Connection) -> pd.DataFrame:
-    """Lightweight list of every EVENT filing, for the Detalle page's manual picker."""
+def search_event_filings(_conn: sqlite3.Connection, term: str, limit: int) -> pd.DataFrame:
+    """On-demand search for the Detalle page — never called with an empty
+    term (the screen skips querying entirely in that case), and never used
+    to pre-load a list of filings.
+
+    Prefix match (`ticker`/`company_name LIKE 'term%'`), not substring: this
+    is what lets SQLite use idx_filings_ticker_nocase / idx_filings_company_name_nocase
+    for an index range scan instead of a full table scan — measured ~2.4s -
+    6.5s for a specific ticker without those indexes, ~10ms with them. Case
+    insensitivity comes from those indexes' NOCASE collation (SQLite's LIKE
+    is already case-insensitive for ASCII either way). Every literal example
+    in the spec (APPLE / apple / AAPL / appl) is a prefix of AAPL / APPLE
+    INC., so this covers the intended searches without needing FTS5.
+
+    Returns only the lean columns needed for a results row — never
+    raw_text/clean_text/raw_response. Requests `limit` rows exactly; pass
+    limit+1 to let the caller detect truncation without a second COUNT(*)
+    query.
+    """
+    pattern = f"{term.strip()}%"
     return pd.read_sql_query(
         """
-        SELECT filename, date_filed, company_name, ticker, form_type
+        SELECT filename, date_filed, ticker, company_name, form_type, filing_category
         FROM filings
         WHERE filing_category = 'EVENT'
+          AND (ticker LIKE ? OR company_name LIKE ?)
         ORDER BY date_filed DESC
+        LIMIT ?
         """,
         _conn,
+        params=(pattern, pattern, limit),
     )
 
 
 @_CACHE
 def get_filing_detail(_conn: sqlite3.Connection, filename: str) -> Optional[Dict]:
-    """Full record for the Detalle page: filings + filing_snapshots + llm_filing_analysis."""
+    """Full record for the Detalle page: filings + llm_filing_analysis."""
     row = _conn.execute(
         """
         SELECT
             f.filename, f.company_name, f.ticker, f.form_type, f.date_filed,
-            f.filing_url, f.clean_text, f.otc_tier, f.sec_type, f.country,
-            s.items_json, s.money_json, s.percentages_json, s.dates_json,
-            s.companies_json, s.people_json, s.agreements_json, s.sections_json,
+            f.filing_url, f.clean_text, f.sec_type, f.country,
             l.primary_event_type, l.secondary_event_types_json, l.is_material,
             l.importance_score, l.market_impact, l.deep_research, l.summary,
             l.key_entities_json, l.evidence_json, l.reason_for_score, l.next_step
         FROM filings f
-        LEFT JOIN filing_snapshots s ON s.filing_filename = f.filename
         LEFT JOIN llm_filing_analysis l ON l.filing_filename = f.filename
         WHERE f.filename = ?
         """,

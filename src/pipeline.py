@@ -8,28 +8,27 @@ updates. Importing this module has no side effects (no load_dotenv(), no
 logging.basicConfig()) — that stays the caller's responsibility.
 
 on_progress, when given, is called with a single dict per unit of work:
-    {"stage": "content"|"snapshots"|"llm", "done": int, "total": int,
+    {"stage": "content"|"llm", "done": int, "total": int,
      "ok": bool, "error": str | None}
 Both the CLI and the dashboard read this same shape; each decides what to
 do with it (the CLI logs it, the dashboard updates st.status/st.progress).
 """
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, Dict, List, Optional
 
 from .sec_ingestion.daily_index import get_filtered_filings
-from .sec_ingestion.downloader import fetch_and_clean
+from .sec_ingestion.downloader import build_session, fetch_and_clean
 from .filing_routing.routing import EVENT, CONTEXT, get_filing_category
 from .database.db import (
     insert_filings,
     update_filing_content,
-    get_filings_needing_snapshot,
-    insert_filing_snapshot,
+    get_filenames_with_content,
 )
-from .document_intelligence.extractor import create_document_snapshot
-from .llm_analysis.first_pass import run_first_pass
+from .llm_analysis.first_pass import run_first_pass, DEFAULT_WORKERS as DEFAULT_LLM_WORKERS
 from .llm_analysis.client import LLMConfigError
 
 logger = logging.getLogger(__name__)
@@ -66,7 +65,10 @@ class DailyPipelineResult:
     inserted: int = 0
     already_existed: int = 0
     content_downloaded: int = 0
+    content_skipped_existing: int = 0
     content_failed: int = 0
+    content_bytes_downloaded: int = 0
+    content_bytes_stored: int = 0
     errors: List[str] = field(default_factory=list)
 
 
@@ -108,10 +110,34 @@ def run_daily_pipeline(
 
     if download_content:
         total = len(filings)
+        # Filings already re-inserted (INSERT OR IGNORE) from a previous run
+        # of this same date may already have clean_text — skip re-downloading
+        # those instead of paying the request again.
+        already_have_content = get_filenames_with_content([f.filename for f in filings])
+        session = build_session(user_agent)
+        started = time.monotonic()
+        attempted = 0
+
         for idx, filing in enumerate(filings, start=1):
+            if filing.filename in already_have_content:
+                result.content_skipped_existing += 1
+                _emit(
+                    on_progress, stage="content", done=idx, total=total, ok=True, error=None,
+                    label=f"{filing.form_type} — {filing.company_name}", skipped=True,
+                    bytes_downloaded=result.content_bytes_downloaded,
+                    bytes_stored=result.content_bytes_stored,
+                    elapsed_seconds=time.monotonic() - started,
+                    speed_bytes_per_sec=0.0, eta_seconds=0.0,
+                )
+                continue
+
             error: Optional[str] = None
+            downloaded_size = 0
+            stored_size = 0
             try:
-                raw, cleaned = fetch_and_clean(filing.filing_url, user_agent)
+                raw, cleaned, downloaded_size, stored_size = fetch_and_clean(
+                    filing.filing_url, user_agent, session=session, expected_type=filing.form_type,
+                )
             except Exception as exc:
                 raw = None
                 error = f"{filing.filename}: {exc}"
@@ -119,10 +145,18 @@ def run_daily_pipeline(
             if raw is not None:
                 update_filing_content(filing.filename, raw, cleaned or "")
                 result.content_downloaded += 1
+                result.content_bytes_downloaded += downloaded_size
+                result.content_bytes_stored += stored_size
             else:
                 result.content_failed += 1
                 error = error or f"{filing.filename}: download failed"
                 result.errors.append(error)
+
+            attempted += 1
+            elapsed = time.monotonic() - started
+            speed = result.content_bytes_downloaded / elapsed if elapsed > 0 else 0.0
+            avg_seconds_per_item = elapsed / attempted if attempted else 0.0
+            eta = avg_seconds_per_item * (total - idx)
 
             _emit(
                 on_progress,
@@ -132,41 +166,13 @@ def run_daily_pipeline(
                 ok=error is None,
                 error=error,
                 label=f"{filing.form_type} — {filing.company_name}",
+                skipped=False,
+                bytes_downloaded=result.content_bytes_downloaded,
+                bytes_stored=result.content_bytes_stored,
+                elapsed_seconds=elapsed,
+                speed_bytes_per_sec=speed,
+                eta_seconds=eta,
             )
-
-    return result
-
-
-@dataclass
-class SnapshotPipelineResult:
-    pending: int = 0
-    built: int = 0
-    errors: List[str] = field(default_factory=list)
-
-
-def run_snapshot_pipeline(on_progress: ProgressCallback = None) -> SnapshotPipelineResult:
-    """Build Document Intelligence snapshots for every EVENT filing pending
-    one — same selection as get_filings_needing_snapshot always used.
-
-    Wraps each filing in try/except so one bad document doesn't abort the
-    batch (main.py's previous inline loop didn't have this — a welcome side
-    effect of the extraction, not a behavior change for the successful path).
-    """
-    result = SnapshotPipelineResult()
-    pending = get_filings_needing_snapshot()
-    result.pending = len(pending)
-
-    for idx, filing in enumerate(pending, start=1):
-        error: Optional[str] = None
-        try:
-            snapshot = create_document_snapshot(filing)
-            if insert_filing_snapshot(snapshot):
-                result.built += 1
-        except Exception as exc:
-            error = f"{filing.get('filename', '?')}: {exc}"
-            result.errors.append(error)
-
-        _emit(on_progress, stage="snapshots", done=idx, total=result.pending, ok=error is None, error=error)
 
     return result
 
@@ -185,6 +191,7 @@ def run_llm_pipeline(
     form_types: Optional[List[str]] = None,
     status: str = "pending",
     order: str = "recent",
+    workers: int = DEFAULT_LLM_WORKERS,
     on_progress: ProgressCallback = None,
 ) -> LLMPipelineResult:
     """Run the LLM first pass over a selection of EVENT filings.
@@ -196,6 +203,9 @@ def run_llm_pipeline(
     LLMConfigError unchanged if LLM_API_KEY/LLM_BASE_URL/LLM_MODEL aren't
     configured; callers decide how to surface that (main() exits, the
     dashboard shows an inline warning).
+
+    workers: number of concurrent LLM HTTP calls (see run_first_pass) —
+    forwarded as-is, same default.
     """
     result = LLMPipelineResult()
 
@@ -206,7 +216,7 @@ def run_llm_pipeline(
 
     processed, errors = run_first_pass(
         limit=limit, date_from=date_from, date_to=date_to, form_types=form_types,
-        status=status, order=order, on_progress=_forward,
+        status=status, order=order, workers=workers, on_progress=_forward,
     )
     result.processed = processed
     result.errors = errors

@@ -50,6 +50,20 @@ def _badge(text: Optional[str], css_class: str) -> str:
     return f'<span class="badge badge-{css_class}"><span class="badge-dot"></span>{html.escape(str(text))}</span>'
 
 
+def _escape_for_markdown_block(text: str) -> str:
+    """html.escape alone isn't enough inside an unsafe_allow_html block:
+    Streamlit's markdown renderer still scans the raw text for KaTeX math
+    delimiters, so a literal '$' (extremely common in SEC filing text —
+    dollar amounts) can be misread as the start of a LaTeX expression. It
+    then blows up with a visible ParseError the moment that "formula"
+    contains an unescaped '&' (e.g. "Robert W. Baird & Co." right after a
+    dollar figure), rendering everything after it in red. Escaping '$' as
+    its numeric HTML entity displays identically but is never recognized
+    as a math delimiter by the markdown/KaTeX pass.
+    """
+    return html.escape(text).replace("$", "&#36;")
+
+
 def render_general_info(detail: Dict) -> None:
     with section_card("Información general", key="general-info"):
         col1, col2 = st.columns(2)
@@ -59,7 +73,6 @@ def render_general_info(detail: Dict) -> None:
             st.markdown(_field("Formulario", detail.get("form_type") or "—"), unsafe_allow_html=True)
         with col2:
             st.markdown(_field("Fecha", format_yyyymmdd(detail.get("date_filed"))), unsafe_allow_html=True)
-            st.markdown(_field("OTC Tier", detail.get("otc_tier") or "—"), unsafe_allow_html=True)
             url = detail.get("filing_url")
             link = f'<a href="{html.escape(url)}" target="_blank">Ver en EDGAR ↗</a>' if url else "—"
             st.markdown(_field("Documento original", link, escape=False), unsafe_allow_html=True)
@@ -77,6 +90,9 @@ def render_ai_analysis(detail: Dict) -> None:
             secondary = safe_json_list(detail.get("secondary_event_types_json"))
             st.markdown('<div class="detail-label">Eventos secundarios</div>', unsafe_allow_html=True)
             st.markdown(_chip_list(secondary, "Sin eventos secundarios"), unsafe_allow_html=True)
+            key_entities = safe_json_list(detail.get("key_entities_json"))
+            st.markdown('<div class="detail-label">Entidades clave</div>', unsafe_allow_html=True)
+            st.markdown(_chip_list(key_entities, "Sin entidades clave"), unsafe_allow_html=True)
         with col2:
             st.markdown(_field("Importance score", format_score(detail.get("importance_score"))), unsafe_allow_html=True)
             impact = detail.get("market_impact")
@@ -91,33 +107,6 @@ def render_ai_analysis(detail: Dict) -> None:
 
         st.markdown(_field("Resumen", detail.get("summary") or "—"), unsafe_allow_html=True)
         st.markdown(_field("Razón de la puntuación", detail.get("reason_for_score") or "—"), unsafe_allow_html=True)
-
-
-def render_structured_extraction(detail: Dict) -> None:
-    with section_card("Información estructurada extraída", key="structured-extraction"):
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown('<div class="detail-label">Items SEC</div>', unsafe_allow_html=True)
-            st.markdown(_chip_list(safe_json_list(detail.get("items_json"))), unsafe_allow_html=True)
-
-            st.markdown('<div class="detail-label">Importes</div>', unsafe_allow_html=True)
-            st.markdown(_chip_list(safe_json_list(detail.get("money_json"))), unsafe_allow_html=True)
-
-            st.markdown('<div class="detail-label">Fechas mencionadas</div>', unsafe_allow_html=True)
-            st.markdown(_chip_list(safe_json_list(detail.get("dates_json"))), unsafe_allow_html=True)
-
-            st.markdown('<div class="detail-label">Agreements</div>', unsafe_allow_html=True)
-            st.markdown(_chip_list(safe_json_list(detail.get("agreements_json"))), unsafe_allow_html=True)
-        with col2:
-            st.markdown('<div class="detail-label">Empresas detectadas</div>', unsafe_allow_html=True)
-            st.markdown(_chip_list(safe_json_list(detail.get("companies_json"))), unsafe_allow_html=True)
-
-            st.markdown('<div class="detail-label">Personas detectadas</div>', unsafe_allow_html=True)
-            st.markdown(_chip_list(safe_json_list(detail.get("people_json"))), unsafe_allow_html=True)
-
-            st.markdown('<div class="detail-label">Palabras clave</div>', unsafe_allow_html=True)
-            key_entities = safe_json_list(detail.get("key_entities_json"))
-            st.markdown(_chip_list(key_entities, "Sin entidades clave"), unsafe_allow_html=True)
 
 
 def render_evidence(detail: Dict) -> None:
@@ -149,4 +138,4 @@ def render_full_text(detail: Dict) -> None:
             text = text[:MAX_FULL_TEXT_CHARS]
 
         with st.container(height=420):
-            st.markdown(f'<div class="filing-text-box">{html.escape(text)}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="filing-text-box">{_escape_for_markdown_block(text)}</div>', unsafe_allow_html=True)
