@@ -50,7 +50,6 @@ def _w(at: AppTest, state_key: str) -> str:
     return _widget_key(state_key, at.session_state[RESET_COUNTER_KEY])
 
 
-# ── resolve_last_downloaded_date ─────────────────────────────────────────────
 
 
 def test_resolve_last_downloaded_date_uses_max_event_date():
@@ -65,13 +64,12 @@ def test_resolve_last_downloaded_date_falls_back_on_missing_keys():
     assert resolve_last_downloaded_date({}) == date.today()
 
 
-# ── defaults on first render ─────────────────────────────────────────────────
 
 
 def test_defaults_on_first_render():
     at = _run()
     assert at.session_state["explorer_date_mode"] == "Día"
-    assert at.session_state["explorer_single_date"] == date(2026, 8, 25)  # harness's fake max_date
+    assert at.session_state["explorer_single_date"] == date(2026, 8, 25)
     assert at.session_state["explorer_ticker"] == ""
     assert at.session_state["explorer_form_types"] == []
     assert at.session_state["explorer_sort_label"] == "Fecha"
@@ -89,12 +87,6 @@ def test_default_filters_select_the_single_default_day():
     assert filters.date_from == filters.date_to == "20260825"
 
 
-# ── widgets read/write the durable key, not their own disposable key ────────
-#
-# This is what the fix actually depends on: as long as every widget below is
-# seeded from, and writes back to, the *durable* key (never trusting its own
-# `key=` to carry the value across a run where it isn't instantiated), the
-# real page-to-page persistence follows for free — see the module docstring.
 
 
 def test_ticker_change_persists_across_unrelated_rerun():
@@ -103,7 +95,6 @@ def test_ticker_change_persists_across_unrelated_rerun():
     at.run()
     assert at.session_state["explorer_ticker"] == "ABCH"
 
-    # A rerun that only touches a different widget must not reset this one.
     at.multiselect(key=_w(at, "explorer_form_types")).select("8-K")
     at.run()
     assert at.session_state["explorer_ticker"] == "ABCH"
@@ -131,7 +122,6 @@ def test_all_filter_types_persist_together():
     at.toggle(key=_w(at, "explorer_ascending")).set_value(True)
     at.run()
 
-    # A further, unrelated rerun must leave every one of these exactly as set.
     at.run()
 
     assert at.session_state["explorer_ticker"] == "ABCH"
@@ -140,7 +130,6 @@ def test_all_filter_types_persist_together():
     assert at.session_state["explorer_ascending"] is True
 
 
-# ── date mode switch ──────────────────────────────────────────────────────────
 
 
 def test_switching_to_range_mode_reveals_range_input_and_persists():
@@ -149,7 +138,7 @@ def test_switching_to_range_mode_reveals_range_input_and_persists():
     at.run()
 
     assert at.session_state["explorer_date_mode"] == "Rango"
-    assert len(at.date_input) == 1  # now the range widget, not the single one
+    assert len(at.date_input) == 1
 
     at.text_input(key=_w(at, "explorer_ticker")).set_value("ABCH")
     at.run()
@@ -167,12 +156,6 @@ def test_range_mode_defaults_to_the_last_day_not_the_full_history():
     assert filters.date_from == filters.date_to == "20260825"
 
 
-# ── "Limpiar filtros" ─────────────────────────────────────────────────────────
-#
-# Resetting pagination to page 1 whenever any *other* filter changes is
-# event_explorer.py's pre-existing filter-signature comparison (unchanged by
-# this feature). Only the "page 1" part of the Limpiar filtros button itself
-# belongs to this module, so that's what's tested here.
 
 
 def test_clear_filters_bumps_the_reset_counter():

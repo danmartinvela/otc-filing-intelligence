@@ -33,11 +33,6 @@ CREATE TABLE IF NOT EXISTS filings (
 )
 """
 
-# Dashboard "Detalle del Filing" on-demand search (ticker/company_name
-# prefix, case-insensitive) needs these to stay fast — measured ~2.4s-6.5s
-# for a specific ticker on a full scan vs. ~10ms with them. NOCASE (not
-# plain BINARY) is what lets SQLite use the index for a case-insensitive
-# LIKE 'prefix%' range scan; a plain index couldn't be used for that.
 _CREATE_TICKER_NOCASE_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_filings_ticker_nocase ON filings(ticker COLLATE NOCASE)"
 )
@@ -92,7 +87,6 @@ CREATE TABLE IF NOT EXISTS llm_filing_analysis (
 )
 """
 
-# Columns added after the initial schema — applied via ALTER TABLE for existing DBs.
 _FILINGS_OPTIONAL_COLUMNS: List[tuple] = [
     ("ticker", "TEXT"),
     ("exchange", "TEXT"),
@@ -161,7 +155,6 @@ def _auto_enrich_tickers(conn: sqlite3.Connection) -> None:
     )
 
 
-# ── Initialisation ────────────────────────────────────────────────────────────
 
 def init_companies_table(db_path: Path = DB_PATH) -> None:
     with get_connection(db_path) as conn:
@@ -194,7 +187,6 @@ def init_db(db_path: Path = DB_PATH) -> None:
     logger.debug(f"Database ready at {db_path}")
 
 
-# ── Filings ───────────────────────────────────────────────────────────────────
 
 def insert_filings(
     filings: List[Filing], db_path: Path = DB_PATH
@@ -286,7 +278,6 @@ def enrich_filings_with_tickers(db_path: Path = DB_PATH) -> tuple[int, int]:
     return enriched, after
 
 
-# ── Companies ─────────────────────────────────────────────────────────────────
 
 def upsert_companies(companies: List[Dict], db_path: Path = DB_PATH) -> int:
     """Insert or replace company records. Returns count processed."""
@@ -322,7 +313,6 @@ def get_all_companies(db_path: Path = DB_PATH) -> List[Dict]:
         return [dict(r) for r in conn.execute("SELECT * FROM companies").fetchall()]
 
 
-# ── OTC Securities ────────────────────────────────────────────────────────────
 
 def upsert_otc_securities(
     securities: List[Dict], db_path: Path = DB_PATH
@@ -398,7 +388,6 @@ def enrich_filings_with_otc(db_path: Path = DB_PATH) -> tuple[int, int]:
     return enriched, no_match
 
 
-# ── LLM first-pass analysis ──────────────────────────────────────────────────
 
 def _llm_selection_where(
     category: str,
@@ -432,7 +421,6 @@ def _llm_selection_where(
         clauses.append("f.filename NOT IN (SELECT filing_filename FROM llm_filing_analysis)")
     elif status == "analyzed":
         clauses.append("f.filename IN (SELECT filing_filename FROM llm_filing_analysis)")
-    # status == "all": no extra clause
     return " AND ".join(clauses), params
 
 

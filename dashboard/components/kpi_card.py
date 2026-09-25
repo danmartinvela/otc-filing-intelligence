@@ -8,8 +8,6 @@ import streamlit as st
 
 
 def _card_html(card: Dict) -> str:
-    # Kept on one line, no leading whitespace: a blank line or indented line
-    # inside an unsafe_allow_html block gets parsed as a Markdown code block.
     value_class = "kpi-value accent" if card.get("accent") else "kpi-value"
     return (
         '<div class="kpi-card">'

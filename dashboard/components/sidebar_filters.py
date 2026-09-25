@@ -53,15 +53,8 @@ _FORM_TYPES_KEY = "explorer_form_types"
 _SORT_LABEL_KEY = "explorer_sort_label"
 _ASCENDING_KEY = "explorer_ascending"
 
-# Bumped once by "Limpiar filtros" to force every widget below to remount
-# (see module docstring). Not itself a widget key, so it's as durable as
-# every other key here — never touched by Streamlit's widget-state pruning.
 RESET_COUNTER_KEY = "explorer_reset_counter"
 
-# Must match event_explorer.py's own _PAGE_KEY — both modules key into the
-# same st.session_state dict by this string, not by a shared Python import
-# (same loose-string-key convention this dashboard already uses for e.g.
-# "selected_filing" and "nav_pages").
 _PAGE_KEY = "explorer_page"
 
 _DEFAULT_SORT_LABEL = next(iter(SORT_OPTIONS))

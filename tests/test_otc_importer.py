@@ -186,7 +186,6 @@ def test_enrich_with_otc_sets_fields(tmp_path):
     db_path = tmp_path / "test.db"
     init_db(db_path)
 
-    # Insert OTC security
     upsert_otc_securities(
         [{"symbol": "AAPL", "security_name": "Apple", "tier": "Expert Market",
           "price": 150.0, "volume": 1000,
@@ -194,7 +193,6 @@ def test_enrich_with_otc_sets_fields(tmp_path):
           "source": "test"}],
         db_path,
     )
-    # Insert filing then manually set its ticker (simulating prior SEC enrichment)
     insert_filings([_make_filing("320193", "AAPL", "edgar/data/320193/f1.txt")], db_path)
     with get_connection(db_path) as conn:
         conn.execute("UPDATE filings SET ticker = 'AAPL'")

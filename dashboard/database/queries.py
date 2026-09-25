@@ -24,7 +24,6 @@ _EVENT_LIST_FROM = """
 """
 
 
-# ── Resumen Ejecutivo ─────────────────────────────────────────────────────────
 
 @_CACHE
 def get_last_updated(_conn: sqlite3.Connection) -> Optional[str]:
@@ -101,7 +100,6 @@ def get_importance_score_distribution(_conn: sqlite3.Connection) -> pd.DataFrame
     )
 
 
-# ── Estadísticas ──────────────────────────────────────────────────────────────
 
 @_CACHE
 def get_form_type_counts(_conn: sqlite3.Connection) -> pd.DataFrame:
@@ -156,7 +154,6 @@ def get_deep_research_ratio(_conn: sqlite3.Connection) -> Dict[str, int]:
     return {"total": row["total"] or 0, "deep_research": row["deep_research"] or 0}
 
 
-# ── Explorador de Eventos ─────────────────────────────────────────────────────
 
 @_CACHE
 def get_event_date_bounds(_conn: sqlite3.Connection) -> Dict[str, Optional[str]]:

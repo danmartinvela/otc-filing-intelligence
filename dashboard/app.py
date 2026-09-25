@@ -13,15 +13,9 @@ from dotenv import load_dotenv
 
 from config import APP_TITLE, APP_ICON, PROJECT_ROOT, STYLES_PATH
 
-# The backend package (src/) lives one directory above dashboard/, which
-# isn't on sys.path by default (Streamlit only adds the running script's own
-# directory). Needed before importing screens.process_filings, which imports
-# from src.pipeline.
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Same .env the CLI reads (SEC_USER_AGENT, LLM_API_KEY/LLM_BASE_URL/LLM_MODEL)
-# — needed for screens/process_filings.py.
 load_dotenv(PROJECT_ROOT / ".env")
 
 from screens import executive_summary, event_explorer, filing_detail, process_filings, statistics
@@ -51,18 +45,12 @@ def main() -> None:
     _render_topbar()
 
     pages = {
-        # No explicit url_path here: a default=True page with its own named
-        # url_path 404s on a hard reload / fresh tab at that URL (Streamlit
-        # only reliably resolves the default page at "/"). Leaving it
-        # unnamed means it's only ever reached at "/", which always works.
         "resumen": st.Page(executive_summary.render, title="Resumen Ejecutivo", default=True),
         "explorador": st.Page(event_explorer.render, title="Explorador de Eventos", url_path="explorador"),
         "detalle": st.Page(filing_detail.render, title="Detalle del Filing", url_path="detalle"),
         "estadisticas": st.Page(statistics.render, title="Estadísticas", url_path="estadisticas"),
         "procesar": st.Page(process_filings.render, title="Procesar filings", url_path="procesar"),
     }
-    # Stashed so any page can st.switch_page(st.session_state.nav_pages["detalle"]) —
-    # st.switch_page needs the actual StreamlitPage object, not just its title/url.
     st.session_state["nav_pages"] = pages
 
     navigation = st.navigation(list(pages.values()))

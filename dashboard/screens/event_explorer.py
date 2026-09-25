@@ -42,7 +42,6 @@ def render() -> None:
     params = tuple(params)
     order_by = resolve_order_by(sort_label, ascending)
 
-    # Any change in filters/sort restarts pagination at page 1.
     signature = (where_extra, params, order_by)
     if st.session_state.get(_FILTERS_SIGNATURE_KEY) != signature:
         st.session_state[_FILTERS_SIGNATURE_KEY] = signature

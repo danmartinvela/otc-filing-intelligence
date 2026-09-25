@@ -13,13 +13,9 @@ logger = logging.getLogger(__name__)
 _HTML_TAG_RE = re.compile(r"<\s*(html|body|div|p|table|head|span)\b", re.IGNORECASE)
 _ALL_TAGS_RE = re.compile(r"<[^>]*>")
 
-# Both are seconds between requests, per SEC EDGAR Fair Access guidelines
-# (https://www.sec.gov/os/accessing-edgar-data): stay under 10 requests/second.
-DEFAULT_DELAY = 0.2  # ~5 req/s — comfortable margin below the ceiling
-MIN_SAFE_DELAY = 0.11  # 1/0.11 ≈ 9.1 req/s — hard floor applied regardless of caller input
+DEFAULT_DELAY = 0.2
+MIN_SAFE_DELAY = 0.11
 
-# Retry policy for transient SEC errors (observed in practice: sporadic
-# "503 File Unavailable" that clears up within a few seconds).
 _MAX_RETRIES = 2
 _RETRY_BACKOFF_SECONDS = 2.0
 
@@ -128,24 +124,6 @@ def clean_filing_text(raw: str) -> str:
     return _normalize(text)
 
 
-# ── Primary-document extraction ──────────────────────────────────────────────
-#
-# A SEC "complete submission text file" (what master.idx's Filename column,
-# and therefore filing_url, always points to) is an SGML wrapper around every
-# document in the accession concatenated together — the primary form plus
-# every exhibit, XBRL instance, consent letter, graphic, etc. Confirmed
-# against real filings across every EVENT form type this project routes
-# (8-K, 8-K/A, DEF 14A, DEFM14A, PREM14A, S-1, S-1/A, SC 13D, SC 13D/A,
-# SC 13E3, SC TO-C, SC TO-I, SC TO-T, 424B3, 424B5): the first <DOCUMENT>
-# block (SEQUENCE=1) is always the primary/substantive document, and in all
-# but one sampled case its own <TYPE> matched the form_type from master.idx.
-#
-# The one exception found: a combined SC TO-T/A accession that EDGAR also
-# cross-references as an SC 13D/A amendment for the same subject company —
-# master.idx listed it as "SC 13D/A", but the document's own CONFORMED
-# SUBMISSION TYPE (and its <DOCUMENT><TYPE>) was "SC TO-T/A". SEQUENCE=1 was
-# still the correct primary document in that case. This is why TYPE mismatch
-# is only ever a warning here, never a condition for rejecting the document.
 
 _DOCUMENT_TAG = "<DOCUMENT>"
 _DOCUMENT_CLOSE_TAG = "</DOCUMENT>"
@@ -186,7 +164,6 @@ def extract_primary_document(raw_submission: str) -> PrimaryDocumentResult:
     text_start = raw_submission.find(_TEXT_OPEN_TAG, doc_start)
     doc_close_before_text = raw_submission.find(_DOCUMENT_CLOSE_TAG, doc_start)
     if text_start == -1 or (0 <= doc_close_before_text < text_start):
-        # No <TEXT> inside this <DOCUMENT> block at all — malformed/unexpected.
         return PrimaryDocumentResult(text=None, doc_type=None, sequence=None, found=False)
 
     header = raw_submission[doc_start:text_start]

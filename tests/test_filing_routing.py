@@ -3,7 +3,6 @@ import pytest
 from src.filing_routing.routing import CONTEXT, EVENT, IGNORED, get_filing_category
 
 
-# ── EVENT ────────────────────────────────────────────────────────────────────
 
 _EVENT_FORMS = [
     "8-K",
@@ -29,7 +28,6 @@ def test_event_forms_classified_as_event(form_type):
     assert get_filing_category(form_type) == EVENT
 
 
-# ── CONTEXT ──────────────────────────────────────────────────────────────────
 
 _CONTEXT_FORMS = ["10-K", "10-Q", "20-F", "6-K"]
 
@@ -39,7 +37,6 @@ def test_context_forms_classified_as_context(form_type):
     assert get_filing_category(form_type) == CONTEXT
 
 
-# ── IGNORED ──────────────────────────────────────────────────────────────────
 
 _IGNORED_FORMS = ["SC 13G", "SC 13G/A", "4", "144", "NT 10-K", "8-A12B", "UNKNOWN-FORM"]
 

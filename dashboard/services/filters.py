@@ -20,8 +20,8 @@ SORT_OPTIONS = {
 
 @dataclass
 class EventFilters:
-    date_from: Optional[str] = None  # YYYYMMDD
-    date_to: Optional[str] = None  # YYYYMMDD
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
     ticker: str = ""
     form_types: List[str] = field(default_factory=list)
 
@@ -51,5 +51,4 @@ def build_where_clause(filters: EventFilters) -> Tuple[str, List]:
 def resolve_order_by(sort_label: str, ascending: bool) -> str:
     column = SORT_OPTIONS.get(sort_label, SORT_OPTIONS["Fecha"])
     direction = "ASC" if ascending else "DESC"
-    # NULLS LAST keeps un-analyzed filings from dominating a descending score sort.
     return f"{column} {direction} NULLS LAST" if column.startswith("l.") else f"{column} {direction}"

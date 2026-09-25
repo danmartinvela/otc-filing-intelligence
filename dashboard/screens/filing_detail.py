@@ -28,14 +28,6 @@ from utils.formatting import format_iso_timestamp
 
 _RESULTS_LIMIT = 50
 
-# Durable session key for the search term — deliberately never passed as the
-# text_input's own `key=`. Streamlit prunes a widget's own session_state
-# entry once that widget isn't instantiated in a render (confirmed earlier
-# for the Explorador de Eventos filters, see sidebar_filters.py), and this
-# page's search box goes uninstantiated the moment the user navigates to any
-# other page — exactly the trip the term must survive. _SEARCH_WIDGET_KEY is
-# the widget's own disposable key; the durable one is read to seed the
-# widget's `value=` and written back with its result every render.
 _SEARCH_TERM_KEY = "filing_detail_search_term"
 _SEARCH_WIDGET_KEY = "_widget__filing_detail_search_term"
 
@@ -56,7 +48,6 @@ def _render_search(conn) -> None:
     term = term.strip()
 
     if not term:
-        # Empty field: no query, no results, nothing loaded — the whole point.
         return
 
     results = search_event_filings(conn, term, limit=_RESULTS_LIMIT + 1)

@@ -18,7 +18,6 @@ from src.database.db import (
 from src.database.models import Filing
 
 
-# ── normalize_cik ─────────────────────────────────────────────────────────────
 
 
 def test_normalize_cik_from_int():
@@ -41,7 +40,6 @@ def test_normalize_cik_max_digits():
     assert normalize_cik("9999999999") == "9999999999"
 
 
-# ── parse_sec_company_tickers ─────────────────────────────────────────────────
 
 _SAMPLE_DATA = {
     "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
@@ -79,7 +77,6 @@ def test_parse_empty_data():
     assert parse_sec_company_tickers({}) == []
 
 
-# ── companies table ───────────────────────────────────────────────────────────
 
 
 def test_init_db_creates_companies_table(tmp_path):
@@ -138,7 +135,6 @@ def test_get_all_companies(tmp_path):
     assert len(get_all_companies(db_path)) == 2
 
 
-# ── ticker enrichment ─────────────────────────────────────────────────────────
 
 
 def _make_filing(cik: str, filename: str) -> Filing:
@@ -168,8 +164,6 @@ def test_enrich_sets_ticker_when_match(tmp_path):
             "SELECT ticker FROM filings WHERE cik = '320193'"
         ).fetchone()
     assert row["ticker"] == "AAPL"
-    # enrich_filings_with_tickers was called after insert auto-enriched; so enriched may be 0
-    # but the ticker must be set regardless of which path set it
     assert row["ticker"] is not None
 
 
@@ -181,7 +175,6 @@ def test_enrich_handles_unpadded_cik(tmp_path):
         [{"cik": "0000320193", "ticker": "AAPL", "company_name": "Apple Inc.", "source": "test"}],
         db_path,
     )
-    # Insert without companies present first to avoid auto-enrich, then test manual enrich
     with get_connection(db_path) as conn:
         conn.execute(
             """INSERT INTO filings (cik, company_name, form_type, date_filed, filename,
@@ -219,13 +212,11 @@ def test_auto_enrich_on_insert(tmp_path):
     assert row["ticker"] == "MSFT"
 
 
-# ── schema migration ──────────────────────────────────────────────────────────
 
 
 def test_init_db_adds_ticker_exchange_to_existing_filings(tmp_path):
     """Upgrading an existing DB without ticker/exchange adds those columns."""
     db_path = tmp_path / "test.db"
-    # Simulate a pre-enrichment DB (no ticker/exchange columns)
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
@@ -252,7 +243,6 @@ def test_init_db_adds_ticker_exchange_to_existing_filings(tmp_path):
     assert "exchange" in cols
 
 
-# ── filing_category ───────────────────────────────────────────────────────────
 
 
 def test_insert_filings_assigns_event_category(tmp_path):

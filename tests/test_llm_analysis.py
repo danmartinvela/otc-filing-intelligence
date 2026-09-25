@@ -28,7 +28,6 @@ from src.llm_analysis.first_pass import (
 from src.llm_analysis.prompts import EVENT_TYPES, SYSTEM_PROMPT, build_user_message
 
 
-# ── prompts ──────────────────────────────────────────────────────────────────
 
 
 def test_system_prompt_contains_all_event_types():
@@ -61,11 +60,10 @@ def test_build_user_message_includes_core_fields():
 def test_build_user_message_handles_missing_optional_fields():
     filing_input = {"company_name": None, "form_type": "8-K", "clean_text": ""}
     message = build_user_message(filing_input)
-    assert "Unknown" not in message or "N/A" in message  # no crash either way
+    assert "Unknown" not in message or "N/A" in message
     assert "8-K" in message
 
 
-# ── parse_llm_response ───────────────────────────────────────────────────────
 
 
 def test_parse_llm_response_valid_json():
@@ -619,7 +617,7 @@ def test_chat_completion_gives_up_after_max_retries(mock_post, mock_sleep):
     with pytest.raises(requests.HTTPError):
         client.chat_completion("sp", "um")
 
-    assert mock_post.call_count == 4  # 1 initial attempt + 3 retries
+    assert mock_post.call_count == 4
 
 
 def _install_real_db(monkeypatch, db_path):

@@ -30,9 +30,6 @@ _NEXT_STEP_BADGE_CLASS = {
 
 
 def _field(label: str, value: str, escape: bool = True) -> str:
-    # escape=False is only for values we built ourselves as trusted HTML
-    # (the EDGAR link, badges) — everything from the filing/LLM must be escaped,
-    # since filing text and free-form LLM output can contain '<', '>', '&'.
     safe_value = html.escape(str(value)) if escape else value
     return f'<div class="detail-label">{label}</div><div class="detail-value">{safe_value}</div>'
 

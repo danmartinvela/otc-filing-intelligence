@@ -94,7 +94,7 @@ def render_search_results_table(df: pd.DataFrame) -> Optional[str]:
 
 def render_pagination(total_rows: int, page_size: int, current_page: int) -> int:
     """Renders 'showing X-Y of N' + prev/next controls. Returns the (possibly updated) page."""
-    total_pages = max(1, -(-total_rows // page_size))  # ceil div
+    total_pages = max(1, -(-total_rows // page_size))
     current_page = min(current_page, total_pages)
 
     start = (current_page - 1) * page_size + 1

@@ -14,7 +14,6 @@ def parse_line(line: str) -> Optional[Filing]:
     if len(parts) != 5:
         return None
     cik, company_name, form_type, date_filed, filename = (p.strip() for p in parts)
-    # CIK must be numeric; this also skips the header row "CIK|Company Name|..."
     if not cik.isdigit():
         return None
     return Filing(
@@ -33,13 +32,11 @@ def parse_master_idx(content: str) -> List[Filing]:
     in_data_section = False
 
     for line in content.splitlines():
-        # The data section starts after the "CIK|..." header line
         if line.startswith("CIK|"):
             in_data_section = True
             continue
         if not in_data_section:
             continue
-        # Skip the dashes separator that follows the header
         if line.startswith("-"):
             continue
 

@@ -46,7 +46,6 @@ def _build_db(tmp_path) -> sqlite3.Connection:
         ("edgar/aapl_3.txt", "20260812", "AAPL", "APPLE INC.", "8-K", "EVENT"),
         ("edgar/aapl_4.txt", "20260805", "AAPL", "APPLE INC.", "10-Q", "EVENT"),
         ("edgar/msft_1.txt", "20260830", "MSFT", "MICROSOFT CORP", "8-K", "EVENT"),
-        # A CONTEXT filing for the same ticker — must never surface in search.
         ("edgar/aapl_ctx.txt", "20260829", "AAPL", "APPLE INC.", "10-K", "CONTEXT"),
     ]
     conn.executemany(
@@ -58,7 +57,6 @@ def _build_db(tmp_path) -> sqlite3.Connection:
     return conn
 
 
-# ── search_event_filings ─────────────────────────────────────────────────────
 
 
 def test_search_matches_ticker_case_insensitively(tmp_path):
@@ -108,7 +106,6 @@ def test_search_no_match_returns_empty_dataframe(tmp_path):
     assert df.empty
 
 
-# ── screen: on-demand contract + session-state persistence ──────────────────
 
 
 def _run() -> AppTest:
@@ -143,8 +140,6 @@ def test_search_term_persists_across_a_simulated_page_revisit():
     at.run()
     assert at.session_state["filing_detail_search_term"] == "AAPL"
 
-    # Nothing re-sets the widget between runs here (as if we'd been on a
-    # different page) — the durable key must still hold the term next render.
     at.run()
     assert at.session_state["filing_detail_search_term"] == "AAPL"
     assert at.text_input[0].value == "AAPL"

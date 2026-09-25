@@ -7,8 +7,6 @@ import streamlit as st
 
 
 def render_page_header(title: str, subtitle: str = "", last_updated: str = "") -> None:
-    # Single-line HTML: a blank/indented line inside unsafe_allow_html gets
-    # parsed as a Markdown code block instead of raw HTML.
     last_updated_html = (
         f'<div class="last-updated">Última actualización<br>{last_updated}</div>'
         if last_updated

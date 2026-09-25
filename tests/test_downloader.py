@@ -46,7 +46,6 @@ def test_clean_filing_text_normalizes_spaces():
 def test_clean_filing_text_collapses_blank_lines():
     raw = "Line 1\n\n\n\n\nLine 2\n\n\n\nLine 3"
     result = clean_filing_text(raw)
-    # Should not have more than one consecutive blank line
     assert "\n\n\n" not in result
     assert "Line 1" in result
     assert "Line 2" in result
@@ -60,7 +59,6 @@ def test_clean_filing_text_plain_passthrough():
     assert "Revenue: $1M" in result
 
 
-# --- Robustness / fallback tests ---
 
 def test_clean_filing_text_bs4_parser_rejected_falls_back():
     """When BS4 raises ParserRejectedMarkup, regex fallback is used and no exception propagates."""
@@ -121,7 +119,6 @@ def test_strip_tags_regex_unclosed_tag():
     assert "text" in result
 
 
-# --- fetch_raw: retry/backoff on transient 5xx ---
 
 def _make_http_error(status_code: int) -> requests.HTTPError:
     response = Mock()
@@ -160,7 +157,7 @@ def test_fetch_raw_gives_up_after_max_retries(mock_sleep):
     result = fetch_raw("https://www.sec.gov/Archives/edgar/data/1/filing.txt", "test-agent test@example.com", session=session)
 
     assert result is None
-    assert session.get.call_count == 3  # 1 initial attempt + 2 retries
+    assert session.get.call_count == 3
 
 
 @patch("src.sec_ingestion.downloader.time.sleep")
@@ -175,14 +172,6 @@ def test_fetch_raw_does_not_retry_4xx(mock_sleep):
     mock_sleep.assert_not_called()
 
 
-# --- extract_primary_document ---
-#
-# Fixtures below are built from a small SGML helper rather than pasted real
-# filings (which run from tens to hundreds of MB), but they reproduce the
-# exact structural shape confirmed against real EDGAR submissions for every
-# EVENT form type this project routes: a <SEC-HEADER>, followed by one
-# <DOCUMENT> block per document in the accession, each with <TYPE>/
-# <SEQUENCE>/<FILENAME>/<DESCRIPTION> header lines then <TEXT>...</TEXT>.
 
 def _sgml_document(doc_type: str, sequence: str, filename: str, text: str, description: str = "EXHIBIT") -> str:
     return (
@@ -263,10 +252,6 @@ def test_extract_primary_document_malformed_missing_text_tag():
     assert result.found is False
 
 
-# --- extract_primary_document: real-world-shaped fixtures ---
-#
-# Modeled on filings actually sampled from EDGAR during the investigation
-# for this feature (form types: SC TO-T, S-1, SC 13E3, SC 13D/A).
 
 def test_extract_primary_document_sc_to_t_style_tender_offer():
     submission = _sgml_submission(
@@ -331,7 +316,6 @@ def test_extract_primary_document_sc_13d_a_dual_type_case():
     assert "PRESS RELEASE full text" not in result.text
 
 
-# --- fetch_and_clean: end-to-end primary-document-only storage ---
 
 def test_fetch_and_clean_stores_only_primary_document_in_raw_and_clean_text():
     """Fundamental acceptance criterion: a multi-document submission must

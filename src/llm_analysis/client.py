@@ -10,10 +10,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 60
 
-# Retry policy for transient failures — needed even more once calls run
-# concurrently (src.llm_analysis.first_pass), since several workers sharing
-# the same provider rate limit makes 429s more likely than in the old
-# sequential loop.
 _MAX_RETRIES = 3
 _RETRY_BACKOFF_SECONDS = 2.0
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}

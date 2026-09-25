@@ -16,7 +16,7 @@ _DASHBOARD_ROOT = Path(__file__).resolve().parents[2]
 if str(_DASHBOARD_ROOT) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_ROOT))
 
-from screens import filing_detail  # noqa: E402
+from screens import filing_detail
 
 _FILINGS_SCHEMA = """
 CREATE TABLE filings (

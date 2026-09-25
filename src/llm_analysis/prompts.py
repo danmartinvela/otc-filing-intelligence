@@ -130,7 +130,6 @@ def build_user_message(filing_input: Dict) -> str:
         f"Items referenced: {', '.join(items) if items else 'N/A'}",
     ]
     if keywords:
-        # Optional context only — the model must not classify based on these alone.
         lines.append(f"Keywords found (context only, not a classification signal): {', '.join(keywords)}")
     lines.extend([
         "",

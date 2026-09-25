@@ -110,9 +110,6 @@ def run_daily_pipeline(
 
     if download_content:
         total = len(filings)
-        # Filings already re-inserted (INSERT OR IGNORE) from a previous run
-        # of this same date may already have clean_text — skip re-downloading
-        # those instead of paying the request again.
         already_have_content = get_filenames_with_content([f.filename for f in filings])
         session = build_session(user_agent)
         started = time.monotonic()

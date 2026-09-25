@@ -41,7 +41,7 @@ from src.pipeline import (
 
 _STATUS_OPTIONS = {"Solo pendientes de análisis": "pending", "Ya analizados": "analyzed", "Todos": "all"}
 _ORDER_OPTIONS = {"Más recientes primero": "recent", "Más antiguos primero": "oldest"}
-_PREVIEW_DISPLAY_CAP = 200  # display cap only — never limits what actually gets sent
+_PREVIEW_DISPLAY_CAP = 200
 
 
 def _format_bytes(value: float) -> str:
@@ -52,7 +52,6 @@ def _format_bytes(value: float) -> str:
     return f"{value:.0f} B"
 
 
-# ── A. Ingesta SEC ────────────────────────────────────────────────────────────
 
 def _run_ingest(target_date: date, download_index: bool, download_content: bool) -> None:
     started = time.time()
@@ -184,7 +183,6 @@ def _render_ingest_section() -> None:
             _run_ingest(target_date, download_index, download_content)
 
 
-# ── B. Análisis mediante LLM ──────────────────────────────────────────────────
 
 def _resolve_period() -> Tuple[Optional[str], Optional[str], str]:
     """Returns (date_from, date_to, display_label) — dates in YYYYMMDD. Default
