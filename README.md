@@ -29,6 +29,8 @@ cp .env.example .env
 # SEC_USER_AGENT="YourName youremail@example.com"
 ```
 
+This is necessary for accesing EDGAR's API.
+
 ## Usage
 
 ### Fetch metadata only
