@@ -29,11 +29,6 @@ def _load_json_list(raw: Optional[str]) -> List[str]:
 
 
 def build_filing_input(filing: Dict) -> Dict:
-    """Build the compact, LLM-ready input for a filing row from the database.
-
-    keywords_json is included only as optional context — it must never be the
-    primary signal for classification (that's the whole point of this module).
-    """
     clean_text = (filing.get("clean_text") or "")[:MAX_CLEAN_TEXT_CHARS]
     return {
         "company_name": filing.get("company_name"),
@@ -66,25 +61,12 @@ _MARKDOWN_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
 
 
 def _strip_markdown_fence(raw: str) -> str:
-    """Some providers (observed: Gemini via OpenRouter) wrap an otherwise
-    valid JSON response in a ```json ... ``` code fence even though the
-    prompt asks for raw JSON — a string starting with a backtick fails
-    json.loads with the same "Expecting value" error as an empty string,
-    so every response from such a model would otherwise be misreported as
-    PARSE_ERROR. Strips the fence if present; leaves already-raw JSON (the
-    normal case for most providers) untouched.
-    """
     stripped = raw.strip()
     match = _MARKDOWN_FENCE_RE.match(stripped)
     return match.group(1).strip() if match else stripped
 
 
 def parse_llm_response(raw_content: str) -> Dict:
-    """Parse the LLM's JSON response. Never raises — falls back to PARSE_ERROR.
-
-    On success, passes through all fields returned by the model, including
-    market_impact, next_step, and key_entities.
-    """
     try:
         parsed = json.loads(_strip_markdown_fence(raw_content or ""))
     except (TypeError, ValueError) as exc:
@@ -97,12 +79,6 @@ def parse_llm_response(raw_content: str) -> Dict:
 
 
 def _call_llm(client: LLMClient, filing: Dict) -> Tuple[Dict, Optional[LLMResponse], Optional[str]]:
-    """Runs on a worker thread: builds the prompt and makes the one HTTP call
-    for this filing. Never raises — always returns (filing, response, error),
-    so a future's .result() can't raise either and one bad filing can't take
-    down the ThreadPoolExecutor batch or leave a future unresolved. Nothing
-    here touches SQLite — that stays on the calling thread (see run_first_pass).
-    """
     filing_input = build_filing_input(filing)
     user_message = build_user_message(filing_input)
     try:
@@ -123,35 +99,6 @@ def run_first_pass(
     workers: int = DEFAULT_WORKERS,
     on_progress: Optional[Callable[[int, int, bool, Optional[str], Optional[Dict]], None]] = None,
 ) -> tuple[int, int]:
-    """Run the LLM first pass over a selection of EVENT filings. Returns (processed, errors).
-
-    date_from/date_to/form_types/status/order/category select which filings
-    are candidates (see database.db.get_event_filings_needing_llm_analysis —
-    the single source of truth for that selection, shared with the preview
-    counts/table so the CLI, the dashboard preview, and this run never
-    disagree). None of the new parameters change behavior when omitted:
-    defaults match the original "all pending EVENT filings" selection.
-
-    workers: how many filings may have their LLM HTTP call in flight at
-    once, via a ThreadPoolExecutor — this work is I/O-bound (waiting on the
-    network), so threads are the right tool; no multiprocessing, no asyncio
-    rewrite. Every HTTP call happens on a worker thread (see _call_llm).
-    Parsing the response and writing it to SQLite (insert_llm_filing_analysis)
-    always happens back on this calling thread, one result at a time, so
-    there is never more than one DB write in flight and no lock/queue is
-    needed to prevent "database is locked" — there's simply never a second
-    writer to contend with.
-
-    on_progress, if given, is called once per filing as
-    on_progress(done, total, ok, error, info) — after the attempt, in
-    completion order (not the original selection order, since faster calls
-    can finish before slower ones started earlier). info is always populated
-    with {"workers", "elapsed_seconds", "speed_per_min", "eta_seconds"}, plus
-    {"company_name", "primary_event_type", "importance_score", "deep_research"}
-    on success. Optional and unused by the CLI, so passing nothing keeps
-    this function's behavior exactly as before (modulo the completion-order
-    change, which is inherent to running concurrently).
-    """
     if workers < 1:
         raise ValueError(f"workers must be >= 1 (got {workers})")
 

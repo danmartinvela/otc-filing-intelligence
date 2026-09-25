@@ -1,21 +1,3 @@
-"""One-off benchmark: compare LLM first-pass throughput at different worker
-counts against the real configured LLM provider (LLM_BASE_URL/LLM_MODEL in
-.env) — used once to pick the default `workers` value for
-llm_analysis.first_pass.run_first_pass. Not part of the test suite or the
-CLI; run manually:
-
-    python -m scripts.benchmark_llm_concurrency
-
-Makes real, paid LLM API calls. Uses the same ~16 most-recent EVENT filings
-(status="all", so already-analyzed filings are included) at every worker
-count, so all four configurations do the exact same amount of work and
-differ only in how many calls run at once. Analysis results for filings
-that were still pending get persisted for real on the first configuration
-that reaches them (run_first_pass always does that); repeat configurations
-just re-request the same completions (INSERT OR IGNORE no-ops the write),
-which is the point — we're measuring the HTTP/concurrency layer, not
-re-deciding whether to store anything.
-"""
 import logging
 import re
 import time
@@ -38,10 +20,6 @@ _original_chat_completion = LLMClient.chat_completion
 
 
 class _StatusCounter(logging.Handler):
-    """Counts the 'LLM API returned <status>' warnings chat_completion's own
-    retry logic already logs — this is how we see every 429/5xx that
-    happened, including ones a retry silently absorbed before it ever
-    became a batch-level error."""
 
     def __init__(self):
         super().__init__(level=logging.WARNING)

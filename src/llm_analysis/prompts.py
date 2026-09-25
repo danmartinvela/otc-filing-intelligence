@@ -1,4 +1,3 @@
-"""Prompt construction for the LLM first pass over EVENT filings."""
 import json
 from typing import Dict, List, Optional
 
@@ -119,7 +118,6 @@ Return only valid JSON. No markdown, no code fences, no commentary before or aft
 
 
 def build_user_message(filing_input: Dict) -> str:
-    """Render the compact filing input into the user message sent to the LLM."""
     items = filing_input.get("items") or []
     keywords = filing_input.get("keywords") or []
     lines = [

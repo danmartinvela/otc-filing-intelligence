@@ -1,8 +1,3 @@
-"""A 'single ratio against a limit' stat — per the dataviz skill this is a
-meter, not a chart (specifically not a 2-slice pie): a hero percentage plus a
-track/fill bar, the fill in the accent hue and the track a lighter step of
-the same ramp.
-"""
 import streamlit as st
 
 

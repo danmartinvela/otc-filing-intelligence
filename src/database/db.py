@@ -112,7 +112,6 @@ def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
 def _add_missing_columns(
     conn: sqlite3.Connection, table: str, columns: List[tuple]
 ) -> None:
-    """Safely add columns to an existing table if they are not already present."""
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
     for col_name, col_type in columns:
         if col_name not in existing:
@@ -121,10 +120,6 @@ def _add_missing_columns(
 
 
 def _backfill_filing_categories(conn: sqlite3.Connection) -> None:
-    """Assign filing_category to rows left NULL by a fresh ALTER TABLE.
-
-    Batched by distinct form_type (a handful of values) rather than per row.
-    """
     rows = conn.execute(
         "SELECT DISTINCT form_type FROM filings WHERE filing_category IS NULL"
     ).fetchall()
@@ -138,7 +133,6 @@ def _backfill_filing_categories(conn: sqlite3.Connection) -> None:
 
 
 def _auto_enrich_tickers(conn: sqlite3.Connection) -> None:
-    """Batch-set ticker on filings that have a matching CIK in companies."""
     conn.execute(
         """
         UPDATE filings
@@ -191,11 +185,6 @@ def init_db(db_path: Path = DB_PATH) -> None:
 def insert_filings(
     filings: List[Filing], db_path: Path = DB_PATH
 ) -> tuple[int, int]:
-    """Insert filings, ignoring duplicates by filename. Returns (inserted, skipped).
-
-    If the companies table has data, newly inserted filings are auto-enriched
-    with their ticker before this function returns.
-    """
     inserted = skipped = 0
     with get_connection(db_path) as conn:
         for filing in filings:
@@ -245,12 +234,6 @@ def update_filing_content(
 
 
 def get_filenames_with_content(filenames: List[str], db_path: Path = DB_PATH) -> Set[str]:
-    """Return the subset of `filenames` that already have non-empty clean_text.
-
-    Used to skip re-downloading filing content that was already fetched in a
-    previous run of the same date — `filename` already has a unique index, so
-    this is a lookup, not a table scan.
-    """
     if not filenames:
         return set()
     placeholders = ",".join("?" for _ in filenames)
@@ -264,7 +247,6 @@ def get_filenames_with_content(filenames: List[str], db_path: Path = DB_PATH) ->
 
 
 def enrich_filings_with_tickers(db_path: Path = DB_PATH) -> tuple[int, int]:
-    """Batch-update filings.ticker from companies. Returns (enriched, still_missing)."""
     with get_connection(db_path) as conn:
         before = conn.execute(
             "SELECT COUNT(*) FROM filings WHERE ticker IS NULL"
@@ -280,7 +262,6 @@ def enrich_filings_with_tickers(db_path: Path = DB_PATH) -> tuple[int, int]:
 
 
 def upsert_companies(companies: List[Dict], db_path: Path = DB_PATH) -> int:
-    """Insert or replace company records. Returns count processed."""
     now = datetime.now(timezone.utc).isoformat()
     rows = [
         (c["cik"], c["ticker"], c["company_name"], c.get("source", ""), now)
@@ -299,7 +280,6 @@ def upsert_companies(companies: List[Dict], db_path: Path = DB_PATH) -> int:
 
 
 def get_company_by_cik(cik: str, db_path: Path = DB_PATH) -> Optional[Dict]:
-    """Return a company dict by its zero-padded CIK, or None if not found."""
     with get_connection(db_path) as conn:
         row = conn.execute(
             "SELECT * FROM companies WHERE cik = ?", (cik,)
@@ -308,7 +288,6 @@ def get_company_by_cik(cik: str, db_path: Path = DB_PATH) -> Optional[Dict]:
 
 
 def get_all_companies(db_path: Path = DB_PATH) -> List[Dict]:
-    """Return all rows from the companies table."""
     with get_connection(db_path) as conn:
         return [dict(r) for r in conn.execute("SELECT * FROM companies").fetchall()]
 
@@ -317,7 +296,6 @@ def get_all_companies(db_path: Path = DB_PATH) -> List[Dict]:
 def upsert_otc_securities(
     securities: List[Dict], db_path: Path = DB_PATH
 ) -> tuple[int, int]:
-    """Insert or replace OTC securities. Returns (inserted, updated)."""
     now = datetime.now(timezone.utc).isoformat()
     with get_connection(db_path) as conn:
         existing = {
@@ -355,11 +333,6 @@ def upsert_otc_securities(
 
 
 def enrich_filings_with_otc(db_path: Path = DB_PATH) -> tuple[int, int]:
-    """Set otc_tier, sec_type, country on filings matched by ticker → symbol.
-
-    Returns (enriched, no_match) where no_match is filings with a ticker but
-    no corresponding row in otc_securities.
-    """
     with get_connection(db_path) as conn:
         cursor = conn.execute(
             """
@@ -396,15 +369,6 @@ def _llm_selection_where(
     form_types: Optional[List[str]],
     status: str,
 ) -> tuple:
-    """Shared WHERE fragment for 'which filings are candidates for the LLM'.
-
-    The one place that decides filing selection for LLM analysis — the
-    pending-fetch, the counts, and the preview table all build on this, so
-    they can never disagree about which rows match a given set of filters.
-
-    status: "pending" (default, no llm_filing_analysis row yet), "analyzed"
-    (already has one), or "all" (no status restriction).
-    """
     clauses = ["f.filing_category = ?", "f.clean_text IS NOT NULL", "f.clean_text != ''"]
     params: List = [category]
     if date_from:
@@ -434,13 +398,6 @@ def get_event_filings_needing_llm_analysis(
     category: str = EVENT,
     db_path: Path = DB_PATH,
 ) -> List[Dict]:
-    """Return EVENT filings with clean_text matching the given selection —
-    defaults (no date/form_types, status="pending", order="recent") match
-    the original behavior exactly, so `--llm-first-pass --limit N` alone is
-    unchanged.
-
-    The LLM works directly off f.clean_text — no other table feeds its input.
-    """
     where, params = _llm_selection_where(category, date_from, date_to, form_types, status)
     direction = "ASC" if order == "oldest" else "DESC"
     query = f"""
@@ -464,10 +421,6 @@ def get_llm_selection_counts(
     form_types: Optional[List[str]] = None,
     db_path: Path = DB_PATH,
 ) -> Dict[str, int]:
-    """Counts for the 'before you spend money' preview: how many filings match
-    period+category+form (any status), and how many of those are pending —
-    independent of whatever status filter is currently selected in the UI.
-    """
     with get_connection(db_path) as conn:
         where_all, params_all = _llm_selection_where(category, date_from, date_to, form_types, "all")
         total = conn.execute(f"SELECT COUNT(*) AS n FROM filings f WHERE {where_all}", params_all).fetchone()["n"]
@@ -486,10 +439,6 @@ def get_llm_selection_preview(
     limit: Optional[int] = None,
     db_path: Path = DB_PATH,
 ) -> List[Dict]:
-    """Lightweight rows for the preview table — same selection as
-    get_event_filings_needing_llm_analysis but WITHOUT clean_text, so
-    previewing never loads full document text just to display a row count.
-    """
     where, params = _llm_selection_where(category, date_from, date_to, form_types, status)
     direction = "ASC" if order == "oldest" else "DESC"
     query = f"""
@@ -517,7 +466,6 @@ def insert_llm_filing_analysis(
     raw_response: str,
     db_path: Path = DB_PATH,
 ) -> bool:
-    """Persist an LLM first-pass result. Returns True if inserted, False if it already existed."""
     now = datetime.now(timezone.utc).isoformat()
     with get_connection(db_path) as conn:
         cursor = conn.execute(
@@ -552,7 +500,6 @@ def insert_llm_filing_analysis(
 
 
 def get_llm_filing_analysis(filename: str, db_path: Path = DB_PATH) -> Optional[Dict]:
-    """Return a stored LLM analysis by filing filename, with JSON fields decoded, or None."""
     with get_connection(db_path) as conn:
         row = conn.execute(
             "SELECT * FROM llm_filing_analysis WHERE filing_filename = ?", (filename,)

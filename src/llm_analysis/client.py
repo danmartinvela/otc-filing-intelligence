@@ -17,7 +17,7 @@ _MAX_RETRY_AFTER_SECONDS = 30.0
 
 
 class LLMConfigError(Exception):
-    """Raised when required LLM environment variables are missing."""
+    pass
 
 
 @dataclass
@@ -27,11 +27,6 @@ class LLMResponse:
 
 
 class LLMClient:
-    """Minimal client for any OpenAI-compatible chat completions API.
-
-    Works with OpenAI, Grok (x.ai), or any other provider exposing the same
-    `/chat/completions` shape — just point LLM_BASE_URL at it.
-    """
 
     def __init__(
         self,
@@ -62,17 +57,6 @@ class LLMClient:
             )
 
     def chat_completion(self, system_prompt: str, user_message: str) -> LLMResponse:
-        """POST one chat completion request, retrying on transient failures.
-
-        Retries (bounded, with backoff) on HTTP 429/5xx, timeouts, and
-        connection errors (resets, refused connections, etc.) — the same
-        four failure modes a batch of concurrent workers sharing one
-        provider rate limit is most likely to hit. Anything else (4xx other
-        than 429, malformed response body) raises immediately since retrying
-        it would just fail the same way again. Safe to call from multiple
-        threads at once: no shared mutable state, each call opens its own
-        connection.
-        """
         url = f"{self.base_url}/chat/completions"
         payload = {
             "model": self.model,
@@ -118,9 +102,6 @@ class LLMClient:
 
     @staticmethod
     def _retry_wait(exc: Exception, attempt: int, status: Optional[int]) -> float:
-        """Honor a 429's Retry-After header when present (capped, so a
-        misbehaving provider can't stall a batch indefinitely); otherwise
-        exponential backoff."""
         if status == 429:
             response = getattr(exc, "response", None)
             retry_after = response.headers.get("Retry-After") if response is not None else None

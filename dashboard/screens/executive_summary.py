@@ -1,4 +1,3 @@
-"""Resumen Ejecutivo — home page: KPI row + category/evolution/score charts."""
 import streamlit as st
 
 from charts.overview_charts import (

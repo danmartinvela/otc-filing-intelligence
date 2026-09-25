@@ -1,12 +1,3 @@
-"""Standalone script for streamlit.testing.v1.AppTest: exercises
-components.sidebar_filters.render_sidebar_filters in isolation, against
-fixed fake filter_options/date_bounds instead of a real database connection.
-
-Not a page of the real app — only used by
-dashboard/tests/test_sidebar_filters_state.py. AppTest.from_file executes
-this file as the Streamlit script for each simulated run, the same way
-app.py is the script for a real session.
-"""
 import sys
 from pathlib import Path
 

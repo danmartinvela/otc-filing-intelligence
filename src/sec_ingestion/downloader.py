@@ -23,23 +23,12 @@ _LXML_AVAILABLE = importlib.util.find_spec("lxml") is not None
 
 
 def build_session(user_agent: str) -> requests.Session:
-    """One persistent (keep-alive) session for a whole download batch.
-
-    Reusing a session avoids a fresh TCP+TLS handshake per filing — measured
-    ~2.9x faster than a plain requests.get() per call for the same URLs.
-    """
     session = requests.Session()
     session.headers.update({"User-Agent": user_agent})
     return session
 
 
 def fetch_raw(url: str, user_agent: str, session: Optional[requests.Session] = None) -> Optional[str]:
-    """GET url and return the response body as text, or None on failure.
-
-    Retries a bounded number of times (with a short linear backoff) on a 5xx
-    from SEC, since those have been observed to be transient. 4xx and other
-    request errors are not retried — they won't succeed on a second try.
-    """
     client = session if session is not None else requests
     headers = None if session is not None else {"User-Agent": user_agent}
 
@@ -71,16 +60,10 @@ def _is_html(text: str) -> bool:
 
 
 def _strip_tags_regex(text: str) -> str:
-    """Last-resort tag removal when all BS4 parsers fail."""
     return _ALL_TAGS_RE.sub(" ", text)
 
 
 def _bs4_get_text(raw: str) -> Optional[str]:
-    """
-    Try to extract text via BeautifulSoup.
-    Attempts html.parser first, then lxml (if installed).
-    Returns None when every available parser fails.
-    """
     for parser in (["html.parser"] + (["lxml"] if _LXML_AVAILABLE else [])):
         try:
             return BeautifulSoup(raw, parser).get_text(separator=" ")
@@ -90,7 +73,6 @@ def _bs4_get_text(raw: str) -> Optional[str]:
 
 
 def _normalize(text: str) -> str:
-    """Collapse whitespace and limit consecutive blank lines to one."""
     text = re.sub(r"[ \t]+", " ", text)
     lines = [line.strip() for line in text.splitlines()]
     result: list[str] = []
@@ -107,10 +89,6 @@ def _normalize(text: str) -> str:
 
 
 def clean_filing_text(raw: str) -> str:
-    """
-    Extract and normalize text from a filing.
-    Never raises — falls back to regex tag stripping if BS4 rejects the markup.
-    """
     if not _is_html(raw):
         return _normalize(raw)
 
@@ -135,8 +113,6 @@ _SEQUENCE_RE = re.compile(r"<SEQUENCE>\s*([^\r\n<]*)", re.IGNORECASE)
 
 @dataclass
 class PrimaryDocumentResult:
-    """Result of locating the primary (SEQUENCE=1) <DOCUMENT> block in a SEC
-    complete submission file."""
     text: Optional[str]
     doc_type: Optional[str]
     sequence: Optional[str]
@@ -144,19 +120,6 @@ class PrimaryDocumentResult:
 
 
 def extract_primary_document(raw_submission: str) -> PrimaryDocumentResult:
-    """Parse a complete submission and return only the content of its first
-    <DOCUMENT> block's <TEXT>...</TEXT>.
-
-    Uses plain substring search (str.find), not a regex over the whole
-    string: since only the FIRST document is needed, this only ever scans as
-    far as that document's own </TEXT> — it never has to touch the exhibits
-    that follow, even when they make up the bulk of a 100+MB submission.
-
-    found=False means no <DOCUMENT>/<TEXT> structure could be located at all
-    (e.g. a very old plain-text filing, or an unexpected format) — callers
-    should fall back to treating the whole submission as the document, and
-    log it for auditing, rather than silently dropping content.
-    """
     doc_start = raw_submission.find(_DOCUMENT_TAG)
     if doc_start == -1:
         return PrimaryDocumentResult(text=None, doc_type=None, sequence=None, found=False)
@@ -189,24 +152,6 @@ def fetch_and_clean(
     session: Optional[requests.Session] = None,
     expected_type: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str], int, int]:
-    """Download a filing's complete submission, keep only its primary
-    document, and return (raw_text, clean_text, downloaded_bytes, stored_bytes).
-
-    raw_text/clean_text hold only the primary document's own content (see
-    extract_primary_document) — never the full submission or its exhibits.
-    The complete submission is discarded once the primary document has been
-    extracted; it is never persisted. downloaded_bytes is what was actually
-    transferred from SEC (for speed/Fair-Access accounting); stored_bytes is
-    the size of what's kept in raw_text. Returns (None, None, 0, 0) on
-    download failure.
-
-    Pass a session (see build_session) to reuse one keep-alive connection
-    across a whole batch instead of opening a new one per filing. delay is
-    clamped to MIN_SAFE_DELAY so no caller can push requests past SEC's Fair
-    Access ceiling. expected_type, if given, is compared against the primary
-    document's own <TYPE> purely to log a warning on mismatch — it is never
-    used to reject the document (see the module docstring above for why).
-    """
     raw_submission = fetch_raw(url, user_agent, session=session)
     if raw_submission is None:
         return None, None, 0, 0

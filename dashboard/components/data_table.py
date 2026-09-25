@@ -1,8 +1,3 @@
-"""The Explorador de Eventos results table + pagination controls.
-
-Column config (progress bar for score, checkbox icon for deep research) uses
-Streamlit's built-in st.column_config — no external grid component.
-"""
 from typing import Optional
 
 import pandas as pd
@@ -27,7 +22,6 @@ _DISPLAY_ORDER = [
 
 
 def render_events_table(df: pd.DataFrame) -> Optional[str]:
-    """Renders the table; returns the filename of the selected row, if any."""
     if df.empty:
         st.markdown('<p class="empty-note">Ningún filing coincide con estos filtros.</p>', unsafe_allow_html=True)
         return None
@@ -68,12 +62,6 @@ _SEARCH_RESULTS_DISPLAY_ORDER = ["Fecha", "Empresa", "Ticker", "Formulario"]
 
 
 def render_search_results_table(df: pd.DataFrame) -> Optional[str]:
-    """Renders the Detalle del Filing search-results table; returns the
-    filename of the selected row, if any. Same click-to-select idiom as
-    render_events_table, with the lean column set search_event_filings
-    returns (no LLM-analysis join — the search itself never touches
-    clean_text/raw_text/raw_response). Assumes df is non-empty; the caller
-    handles the "no results" / empty-search states."""
     display_df = df.copy()
     display_df["date_filed"] = display_df["date_filed"].map(format_yyyymmdd)
     display_df = display_df.rename(columns=_SEARCH_RESULTS_COLUMN_RENAME)
@@ -93,7 +81,6 @@ def render_search_results_table(df: pd.DataFrame) -> Optional[str]:
 
 
 def render_pagination(total_rows: int, page_size: int, current_page: int) -> int:
-    """Renders 'showing X-Y of N' + prev/next controls. Returns the (possibly updated) page."""
     total_pages = max(1, -(-total_rows // page_size))
     current_page = min(current_page, total_pages)
 

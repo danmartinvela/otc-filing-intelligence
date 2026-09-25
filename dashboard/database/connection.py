@@ -1,9 +1,3 @@
-"""Single point of access to filings.db — opened strictly read-only.
-
-Using the sqlite3 URI `mode=ro` means any accidental write from this codebase
-fails at the driver level (`sqlite3.OperationalError: attempt to write a
-readonly database`), not just by convention. The backend is the only writer.
-"""
 import sqlite3
 
 import streamlit as st

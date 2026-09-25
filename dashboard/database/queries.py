@@ -1,8 +1,3 @@
-"""All SQL lives here — every function returns a pandas DataFrame or a plain
-scalar/dict, never a cursor, so callers never see SQL. Every function is
-read-only and cached with st.cache_data; the leading underscore on `_conn`
-tells Streamlit not to try to hash the connection object.
-"""
 import sqlite3
 from typing import Dict, List, Optional, Sequence
 
@@ -166,8 +161,6 @@ def get_event_date_bounds(_conn: sqlite3.Connection) -> Dict[str, Optional[str]]
 
 @_CACHE
 def get_filter_options(_conn: sqlite3.Connection) -> Dict[str, List[str]]:
-    """Distinct values for the Explorador's/Procesar filings' form-type
-    multiselects, EVENT filings only."""
     form_types = _conn.execute(
         "SELECT DISTINCT form_type FROM filings WHERE filing_category = 'EVENT' "
         "AND form_type IS NOT NULL ORDER BY form_type"
@@ -185,24 +178,6 @@ def get_events_count(_conn: sqlite3.Connection, where_extra: str, params: Sequen
 
 @_CACHE
 def search_event_filings(_conn: sqlite3.Connection, term: str, limit: int) -> pd.DataFrame:
-    """On-demand search for the Detalle page — never called with an empty
-    term (the screen skips querying entirely in that case), and never used
-    to pre-load a list of filings.
-
-    Prefix match (`ticker`/`company_name LIKE 'term%'`), not substring: this
-    is what lets SQLite use idx_filings_ticker_nocase / idx_filings_company_name_nocase
-    for an index range scan instead of a full table scan — measured ~2.4s -
-    6.5s for a specific ticker without those indexes, ~10ms with them. Case
-    insensitivity comes from those indexes' NOCASE collation (SQLite's LIKE
-    is already case-insensitive for ASCII either way). Every literal example
-    in the spec (APPLE / apple / AAPL / appl) is a prefix of AAPL / APPLE
-    INC., so this covers the intended searches without needing FTS5.
-
-    Returns only the lean columns needed for a results row — never
-    raw_text/clean_text/raw_response. Requests `limit` rows exactly; pass
-    limit+1 to let the caller detect truncation without a second COUNT(*)
-    query.
-    """
     pattern = f"{term.strip()}%"
     return pd.read_sql_query(
         """
@@ -220,7 +195,6 @@ def search_event_filings(_conn: sqlite3.Connection, term: str, limit: int) -> pd
 
 @_CACHE
 def get_filing_detail(_conn: sqlite3.Connection, filename: str) -> Optional[Dict]:
-    """Full record for the Detalle page: filings + llm_filing_analysis."""
     row = _conn.execute(
         """
         SELECT

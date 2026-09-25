@@ -231,7 +231,6 @@ def test_init_db_creates_otc_securities_table(tmp_path):
 
 
 def test_init_db_adds_otc_columns_to_existing_filings(tmp_path):
-    """Upgrading an old DB without OTC columns adds them."""
     db_path = tmp_path / "test.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute(

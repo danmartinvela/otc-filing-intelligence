@@ -9,7 +9,6 @@ SEC_ARCHIVES_BASE = "https://www.sec.gov/Archives"
 
 
 def parse_line(line: str) -> Optional[Filing]:
-    """Parse a single pipe-delimited data line from master.idx."""
     parts = line.strip().split("|")
     if len(parts) != 5:
         return None
@@ -27,7 +26,6 @@ def parse_line(line: str) -> Optional[Filing]:
 
 
 def parse_master_idx(content: str) -> List[Filing]:
-    """Parse the full text of a master.idx file into Filing objects."""
     filings: List[Filing] = []
     in_data_section = False
 

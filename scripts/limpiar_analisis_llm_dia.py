@@ -1,14 +1,3 @@
-"""Borra el analisis LLM (tabla llm_filing_analysis) de un dia concreto,
-dejando intactos filings/raw_text/clean_text, para poder relanzar
---llm-first-pass sobre ese mismo dia con otra configuracion (p. ej. otro
-numero de workers) sin volver a descargar nada de la SEC.
-
-No toca ninguna otra tabla ni ningun otro dia. No ejecuta VACUUM (no hace
-falta para relanzar un benchmark repetidas veces sobre el mismo volumen).
-
-Uso:
-    .venv/bin/python3 scripts/limpiar_analisis_llm_dia.py 2026-09-02
-"""
 import sys
 from pathlib import Path
 

@@ -1,10 +1,8 @@
-"""Small, stateless formatting helpers shared across pages and components."""
 from datetime import date, datetime
 from typing import Optional
 
 
 def format_iso_timestamp(raw: Optional[str]) -> str:
-    """'2026-08-05T10:15:00+00:00' -> '05/08/2026 10:15 UTC'. Empty string if raw is falsy."""
     if not raw:
         return "—"
     try:
@@ -15,7 +13,6 @@ def format_iso_timestamp(raw: Optional[str]) -> str:
 
 
 def format_yyyymmdd(raw: Optional[str]) -> str:
-    """'20240515' -> '15/05/2024'. Returns the raw value unchanged if it doesn't parse."""
     if not raw:
         return "—"
     try:
@@ -25,7 +22,6 @@ def format_yyyymmdd(raw: Optional[str]) -> str:
 
 
 def compact_number(value: Optional[float]) -> str:
-    """1284 -> '1,284'; 12900 -> '12.9K'; 4200000 -> '4.2M'."""
     if value is None:
         return "—"
     value = float(value)
@@ -43,7 +39,6 @@ def format_score(value) -> str:
 
 
 def yyyymmdd_to_date(raw: Optional[str], fallback: date) -> date:
-    """'20240515' -> date(2024, 5, 15). Falls back to `fallback` if raw is missing/invalid."""
     if not raw:
         return fallback
     try:

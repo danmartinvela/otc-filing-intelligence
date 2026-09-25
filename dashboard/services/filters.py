@@ -1,12 +1,3 @@
-"""Translates the Explorador de Eventos filter/sort UI state into a
-parameterized SQL WHERE clause + ORDER BY — the only place that builds SQL
-fragments from user input, so injection-safety lives in one spot.
-
-Every value the user can type goes through `?` parameter binding. The only
-thing ever string-interpolated is the ORDER BY column, and only after it's
-been checked against SORT_OPTIONS (a fixed whitelist) — never the raw filter
-values themselves.
-"""
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -27,7 +18,6 @@ class EventFilters:
 
 
 def build_where_clause(filters: EventFilters) -> Tuple[str, List]:
-    """Returns (sql_fragment, params) for everything after 'WHERE f.filing_category = ?'."""
     clauses: List[str] = []
     params: List = []
 

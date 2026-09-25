@@ -57,10 +57,6 @@ def _read_csv(csv_path: str) -> List[Dict]:
 def import_otc_screener_csv(
     csv_path: str, db_path: Path = DB_PATH
 ) -> tuple[int, int]:
-    """Parse an OTC Markets Stock Screener CSV and upsert into otc_securities.
-
-    Returns (inserted, updated).
-    """
     logger.info(f"Reading OTC Screener CSV: {csv_path}")
     rows = _read_csv(csv_path)
     if not rows:

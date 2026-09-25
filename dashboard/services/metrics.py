@@ -1,8 +1,3 @@
-"""Turns raw query results into ready-to-render view models.
-
-Keeps pages/*.py free of arithmetic — a page fetches data and calls a service,
-it never computes a percentage or picks a caption itself.
-"""
 from typing import Dict, List
 
 from config import IMPORTANCE_THRESHOLD
@@ -10,7 +5,6 @@ from utils.formatting import compact_number, format_score
 
 
 def build_kpi_cards(kpis: Dict) -> List[Dict]:
-    """Build the ordered list of KPI card view models for the executive summary."""
     total = kpis["total_filings"]
     deep_research_pct = (
         (kpis["deep_research_count"] / kpis["analyzed_count"] * 100)

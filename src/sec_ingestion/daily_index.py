@@ -43,10 +43,6 @@ def fetch_daily_index(target_date: date, user_agent: str) -> str:
 
 
 def get_filtered_filings(target_date: date, user_agent: str) -> List[Filing]:
-    """Fetch and keep only filings that are EVENT or CONTEXT (see filing_routing).
-
-    IGNORED form types are dropped here, before they ever reach the database.
-    """
     content = fetch_daily_index(target_date, user_agent)
     all_filings = parse_master_idx(content)
     filtered = [f for f in all_filings if get_filing_category(f.form_type) != IGNORED]

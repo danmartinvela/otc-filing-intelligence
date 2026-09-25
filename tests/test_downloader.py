@@ -61,7 +61,6 @@ def test_clean_filing_text_plain_passthrough():
 
 
 def test_clean_filing_text_bs4_parser_rejected_falls_back():
-    """When BS4 raises ParserRejectedMarkup, regex fallback is used and no exception propagates."""
     html = "<html><body><p>Important content</p></body></html>"
     with patch(
         "src.sec_ingestion.downloader.BeautifulSoup",
@@ -75,7 +74,6 @@ def test_clean_filing_text_bs4_parser_rejected_falls_back():
 
 
 def test_clean_filing_text_bs4_generic_exception_falls_back():
-    """Any unexpected BS4 exception is also caught and falls back gracefully."""
     html = "<div>Some filing text</div>"
     with patch(
         "src.sec_ingestion.downloader.BeautifulSoup",
@@ -87,7 +85,6 @@ def test_clean_filing_text_bs4_generic_exception_falls_back():
 
 
 def test_clean_filing_text_null_bytes_do_not_raise():
-    """Null bytes in HTML content must not crash the pipeline."""
     raw = "<html><body>Valid text\x00with null bytes</body></html>"
     result = clean_filing_text(raw)
     assert result is not None
@@ -100,7 +97,6 @@ def test_clean_filing_text_empty_string():
 
 
 def test_clean_filing_text_only_tags():
-    """HTML with no visible text returns empty (or near-empty) string without raising."""
     result = clean_filing_text("<html><head><style>.foo{}</style></head><body></body></html>")
     assert result is not None
 
@@ -114,7 +110,6 @@ def test_strip_tags_regex_removes_tags():
 
 
 def test_strip_tags_regex_unclosed_tag():
-    """Regex fallback should not raise on unclosed tags."""
     result = _strip_tags_regex("<div>text < unclosed")
     assert "text" in result
 
@@ -238,7 +233,6 @@ def test_extract_primary_document_type_matches_form_type():
 
 
 def test_extract_primary_document_no_document_structure_falls_back():
-    """Very old / malformed filings with no <DOCUMENT> tag at all."""
     plain = "CIK|COMPANY NAME|FORM TYPE|DATE FILED|FILENAME\nNo SGML structure here.\n"
     result = extract_primary_document(plain)
     assert result.found is False
@@ -246,7 +240,6 @@ def test_extract_primary_document_no_document_structure_falls_back():
 
 
 def test_extract_primary_document_malformed_missing_text_tag():
-    """A <DOCUMENT> block that closes before any <TEXT> is found."""
     submission = "<DOCUMENT>\n<TYPE>8-K\n<SEQUENCE>1\n</DOCUMENT>\n"
     result = extract_primary_document(submission)
     assert result.found is False
@@ -297,12 +290,6 @@ def test_extract_primary_document_sc_13e3_style_going_private():
 
 
 def test_extract_primary_document_sc_13d_a_dual_type_case():
-    """Modeled on a real observed case (a GENCO SHIPPING accession):
-    master.idx listed the filing as SC 13D/A, but the primary document's own
-    <TYPE> was SC TO-T/A, because EDGAR let the filer cross-reference the
-    same accession under both purposes. SEQUENCE=1 is still the correct
-    primary document — a TYPE mismatch must never block extraction, only
-    warn (checked separately in the fetch_and_clean tests below)."""
     submission = _sgml_submission(
         _sgml_document("SC TO-T/A", "1", "sctota.htm", "AMENDED TENDER OFFER STATEMENT body"),
         _sgml_document("EX-99.(A)(5)(I)", "2", "press_release.htm", "PRESS RELEASE full text"),
@@ -318,9 +305,6 @@ def test_extract_primary_document_sc_13d_a_dual_type_case():
 
 
 def test_fetch_and_clean_stores_only_primary_document_in_raw_and_clean_text():
-    """Fundamental acceptance criterion: a multi-document submission must
-    leave no trace of its exhibits in either raw_text or clean_text — only
-    SEQUENCE=1's own content may be stored."""
     submission = _sgml_submission(
         _sgml_document("8-K", "1", "form8k.htm", "<html><body>Material event text</body></html>"),
         _sgml_document("EX-99.1", "2", "ex99-1.htm", "<html><body>Press release exhibit content</body></html>"),

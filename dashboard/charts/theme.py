@@ -1,11 +1,3 @@
-"""Shared Plotly layout defaults so every chart renders on the same dark surface,
-with the same ink/gridline colors as styles/main.css (see config.THEME).
-
-These are applied as direct `update_layout(**...)` keyword arguments rather
-than wrapped in a `go.layout.Template` — Streamlit's plotly_chart component
-overrides/strips colors that only live inside a figure's `layout.template`
-(even with `theme=None`), but leaves directly-set layout properties alone.
-"""
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -55,15 +47,9 @@ LAYOUT_DEFAULTS = dict(
 
 
 def themed_figure(fig: go.Figure) -> go.Figure:
-    """Apply the shared dark-surface layout defaults to a figure."""
     fig.update_layout(**LAYOUT_DEFAULTS)
     return fig
 
 
 def render_chart(fig: go.Figure) -> None:
-    """The only place that calls st.plotly_chart.
-
-    theme=None is required: Streamlit otherwise silently overrides the figure's
-    own layout/colorway with its built-in (light) chart theme.
-    """
     st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})

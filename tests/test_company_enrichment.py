@@ -168,7 +168,6 @@ def test_enrich_sets_ticker_when_match(tmp_path):
 
 
 def test_enrich_handles_unpadded_cik(tmp_path):
-    """CIK '320193' in filings must match company with CIK '0000320193'."""
     db_path = tmp_path / "test.db"
     init_db(db_path)
     upsert_companies(
@@ -198,7 +197,6 @@ def test_enrich_no_match_does_not_raise(tmp_path):
 
 
 def test_auto_enrich_on_insert(tmp_path):
-    """Ticker is set automatically at insert time when companies table is populated."""
     db_path = tmp_path / "test.db"
     init_db(db_path)
     upsert_companies(
@@ -215,7 +213,6 @@ def test_auto_enrich_on_insert(tmp_path):
 
 
 def test_init_db_adds_ticker_exchange_to_existing_filings(tmp_path):
-    """Upgrading an existing DB without ticker/exchange adds those columns."""
     db_path = tmp_path / "test.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -295,7 +292,6 @@ def test_insert_filings_assigns_ignored_category(tmp_path):
 
 
 def test_init_db_backfills_filing_category_on_existing_rows(tmp_path):
-    """Upgrading a pre-filing_category DB assigns categories to existing rows."""
     db_path = tmp_path / "test.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute(

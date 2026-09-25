@@ -1,8 +1,3 @@
-"""Consistent page header: title + subtitle on the left, last-updated on the right.
-
-Pure presentation — callers supply already-formatted strings, this module has
-no knowledge of the database.
-"""
 import streamlit as st
 
 

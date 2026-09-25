@@ -1,38 +1,3 @@
-"""Renders the Explorador de Eventos filter panel in the sidebar.
-
-Pure UI: takes the distinct option lists and date bounds the page already
-fetched from the database, returns an EventFilters + the chosen sort — this
-module never touches SQL.
-
-Every filter persists in st.session_state under a durable key (_STATE keys
-below) so navigating to another page and back restores the Explorador
-unchanged. That durable key is deliberately never passed as a widget's own
-`key=` — confirmed against a real two-page round trip (not just a same-page
-rerun) that Streamlit prunes a widget's own key from session_state once that
-widget isn't instantiated for a run, which a page switch always is. Binding
-persistence directly to a widget's `key=` therefore quietly resets on the
-very first return trip. Each widget instead gets its own throwaway internal
-key (see _widget_key); the durable key is read to seed the widget's
-`value=`/`index=`/`default=` before rendering it, and written back with the
-widget's return value right after — plain session_state entries like that
-are never touched by Streamlit's widget garbage collection, which is
-exactly why _PAGE_KEY (see event_explorer.py) already survived page
-switches before this file did anything special for it.
-
-_widget_key also folds in a reset counter (see "Limpiar filtros" below):
-confirmed against a real browser that some widgets (st.text_input in
-particular) don't visually refresh from a new value= while their key stays
-the same, even though the underlying session_state genuinely did change —
-Streamlit/React treats a stable key as "the same component" and doesn't
-force it to drop whatever the user last typed client-side. Bumping the
-counter on every reset changes every widget's key at once, forcing a full
-remount so the UI actually shows the reset values instead of only the
-server-side state being correct.
-
-No filter state is ever written anywhere other than st.session_state — nothing
-touches SQLite, disk, or the browser's own storage, so a brand new session
-(session_state empty) always starts from the defaults below.
-"""
 from datetime import date
 from typing import Dict, List, Tuple
 
@@ -61,12 +26,6 @@ _DEFAULT_SORT_LABEL = next(iter(SORT_OPTIONS))
 
 
 def _widget_key(state_key: str, reset_counter: int) -> str:
-    """The widget's own key — deliberately different from state_key (see
-    module docstring). Its value is disposable; only state_key is durable.
-    Takes reset_counter explicitly (rather than reading it from
-    st.session_state itself) so this stays a pure function callers — tests
-    included — can compute without needing a live Streamlit script context.
-    """
     return f"_widget__{state_key}__{reset_counter}"
 
 
@@ -78,13 +37,6 @@ def _index_of(options: List[str], value, default_index: int = 0) -> int:
 
 
 def resolve_last_downloaded_date(date_bounds: Dict[str, str]) -> date:
-    """The most recent date_filed among EVENT filings — the day this page
-    should default to, since a whole-table "last downloaded" date could
-    belong to a day with zero EVENT filings (all CONTEXT that day), which
-    would default the Explorador to an empty table. Falls back to today
-    when the database has no EVENT filings at all (date_bounds["max_date"]
-    is None), per date_bounds already being computed with that fallback.
-    """
     return yyyymmdd_to_date(date_bounds.get("max_date"), fallback=date.today())
 
 
@@ -101,9 +53,6 @@ def _defaults(last_date: date) -> Dict:
 
 
 def _ensure_state(last_date: date) -> None:
-    """Seed every durable filter key exactly once — never overwrites a key
-    that's already there, which is what lets a value picked before a page
-    switch survive the trip."""
     if RESET_COUNTER_KEY not in st.session_state:
         st.session_state[RESET_COUNTER_KEY] = 0
     for key, value in _defaults(last_date).items():

@@ -1,13 +1,3 @@
-"""Standalone script for streamlit.testing.v1.AppTest: exercises
-screens.filing_detail._render_search in isolation, against a small
-in-memory sqlite3 connection instead of the real production database.
-
-Not a page of the real app — only used by
-dashboard/tests/test_filing_detail_search.py. Rebuilds the fixture DB fresh
-on every AppTest.run() (module-level code re-executes on each simulated
-rerun, same as a real Streamlit script) — deterministic since the fixture
-data never changes.
-"""
 import sqlite3
 import sys
 from pathlib import Path

@@ -1,9 +1,3 @@
-"""Explorador de Eventos — filterable, sortable, paginated table of EVENT filings.
-
-Filtering, sorting, and pagination all happen in SQL (see services/filters.py
-and database/queries.py) so this stays fast even with thousands of rows —
-only the current page is ever materialized into a DataFrame.
-"""
 import streamlit as st
 
 from components.data_table import render_events_table, render_pagination

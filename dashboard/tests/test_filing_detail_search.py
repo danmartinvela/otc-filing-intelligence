@@ -1,15 +1,3 @@
-"""Tests for the Detalle del Filing on-demand search:
-  - search_event_filings: pure SQL behavior against a real sqlite3
-    connection — prefix match, case-insensitivity, date_filed DESC
-    ordering, limit, and that only the lean columns are ever selected
-    (no raw_text/clean_text/raw_response).
-  - The screen itself: driven through streamlit.testing.v1.AppTest against
-    a small harness script, verifying the on-demand contract (no query/no
-    results while the field is empty) and that the search term survives a
-    simulated "left this page and came back" trip — same reasoning as
-    test_sidebar_filters_state.py: a durable session_state key survives
-    that trip only if it is never bound as a widget's own `key=`.
-"""
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
@@ -130,11 +118,6 @@ def test_typing_a_term_runs_the_query_and_shows_results():
 
 
 def test_search_term_persists_across_a_simulated_page_revisit():
-    """A page revisit is, from this widget's point of view, just another
-    render after the widget goes uninstantiated for a run — exactly what a
-    real navigation away and back causes. AppTest can't simulate an actual
-    other page, but it can simulate the widget's key going untouched for a
-    run and confirm the durable term survives regardless."""
     at = _run()
     at.text_input[0].set_value("AAPL")
     at.run()

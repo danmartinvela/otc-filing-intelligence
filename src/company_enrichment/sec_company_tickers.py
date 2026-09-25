@@ -10,15 +10,10 @@ _SOURCE_LABEL = "SEC company_tickers.json"
 
 
 def normalize_cik(cik: Union[str, int]) -> str:
-    """Convert any CIK representation to a zero-padded 10-digit string.
-
-    Examples: 320193 -> '0000320193', '320193' -> '0000320193'
-    """
     return str(int(cik)).zfill(10)
 
 
 def download_sec_company_tickers(user_agent: str) -> Dict:
-    """Fetch the SEC master company/ticker mapping JSON."""
     logger.info(f"Downloading {SEC_COMPANY_TICKERS_URL}")
     response = requests.get(
         SEC_COMPANY_TICKERS_URL,
@@ -30,11 +25,6 @@ def download_sec_company_tickers(user_agent: str) -> Dict:
 
 
 def parse_sec_company_tickers(data: Dict) -> List[Dict]:
-    """Convert raw SEC JSON into a list of company dicts ready for upsert.
-
-    Input:  {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}, ...}
-    Output: [{"cik": "0000320193", "ticker": "AAPL", "company_name": "Apple Inc.", "source": "..."}]
-    """
     companies: List[Dict] = []
     for entry in data.values():
         try:

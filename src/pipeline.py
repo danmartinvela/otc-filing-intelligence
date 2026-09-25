@@ -1,18 +1,3 @@
-"""Orchestration layer shared by the CLI (main.py) and the Streamlit
-dashboard's "Procesar filings" page.
-
-Each function here is the extracted body of what used to live inline in
-main.py's private _run_* functions — same logic, just parameterized (no
-argparse.Namespace) and with an optional on_progress callback for live UI
-updates. Importing this module has no side effects (no load_dotenv(), no
-logging.basicConfig()) — that stays the caller's responsibility.
-
-on_progress, when given, is called with a single dict per unit of work:
-    {"stage": "content"|"llm", "done": int, "total": int,
-     "ok": bool, "error": str | None}
-Both the CLI and the dashboard read this same shape; each decides what to
-do with it (the CLI logs it, the dashboard updates st.status/st.progress).
-"""
 import logging
 import os
 import time
@@ -44,8 +29,6 @@ def _emit(on_progress: ProgressCallback, **data) -> None:
 
 
 def get_user_agent() -> str:
-    """Read SEC_USER_AGENT from the environment, falling back to a labeled
-    placeholder (and logging a warning) if it isn't set."""
     agent = os.getenv("SEC_USER_AGENT", "").strip()
     if not agent:
         logger.warning(
@@ -78,14 +61,6 @@ def run_daily_pipeline(
     download_content: bool = False,
     on_progress: ProgressCallback = None,
 ) -> DailyPipelineResult:
-    """Fetch the SEC daily index for target_date, store EVENT/CONTEXT
-    filings, and optionally download+clean each filing's full text.
-
-    Raises FileNotFoundError if no index exists for that date (e.g. a
-    weekend/holiday) and any other exception the index fetch/parse raises —
-    same as get_filtered_filings always has; callers handle it the same way
-    _run_daily_pipeline's caller (main()) already does.
-    """
     result = DailyPipelineResult(target_date=target_date)
 
     filings = get_filtered_filings(target_date, user_agent)
@@ -191,19 +166,6 @@ def run_llm_pipeline(
     workers: int = DEFAULT_LLM_WORKERS,
     on_progress: ProgressCallback = None,
 ) -> LLMPipelineResult:
-    """Run the LLM first pass over a selection of EVENT filings.
-
-    date_from/date_to/form_types/status/order select the candidates — see
-    llm_analysis.first_pass.run_first_pass, which this delegates to
-    entirely (no part of that loop is reimplemented here). Defaults match
-    the original "all pending EVENT filings" behavior. Raises
-    LLMConfigError unchanged if LLM_API_KEY/LLM_BASE_URL/LLM_MODEL aren't
-    configured; callers decide how to surface that (main() exits, the
-    dashboard shows an inline warning).
-
-    workers: number of concurrent LLM HTTP calls (see run_first_pass) —
-    forwarded as-is, same default.
-    """
     result = LLMPipelineResult()
 
     def _forward(done: int, total: int, ok: bool, error: Optional[str], info: Optional[Dict]) -> None:

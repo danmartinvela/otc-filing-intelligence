@@ -1,8 +1,3 @@
-"""Central configuration for the dashboard: paths, thresholds, and the visual theme.
-
-Nothing here talks to Streamlit or SQLite directly — it's pure constants so every
-other module (database, components, charts, pages) reads the same values.
-"""
 from pathlib import Path
 
 

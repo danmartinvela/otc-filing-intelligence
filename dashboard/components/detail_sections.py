@@ -1,10 +1,3 @@
-"""Renders the Detalle del Filing page sections. Pure presentation — the page
-module fetches the record and hands this module plain dicts/strings.
-
-All HTML is built as single-line strings: a blank or indented line inside an
-unsafe_allow_html block gets parsed as a Markdown code block instead of raw
-HTML (see components/kpi_card.py for the same fix, hit first there).
-"""
 import html
 from typing import Dict, List, Optional
 
@@ -48,16 +41,6 @@ def _badge(text: Optional[str], css_class: str) -> str:
 
 
 def _escape_for_markdown_block(text: str) -> str:
-    """html.escape alone isn't enough inside an unsafe_allow_html block:
-    Streamlit's markdown renderer still scans the raw text for KaTeX math
-    delimiters, so a literal '$' (extremely common in SEC filing text —
-    dollar amounts) can be misread as the start of a LaTeX expression. It
-    then blows up with a visible ParseError the moment that "formula"
-    contains an unescaped '&' (e.g. "Robert W. Baird & Co." right after a
-    dollar figure), rendering everything after it in red. Escaping '$' as
-    its numeric HTML entity displays identically but is never recognized
-    as a math delimiter by the markdown/KaTeX pass.
-    """
     return html.escape(text).replace("$", "&#36;")
 
 

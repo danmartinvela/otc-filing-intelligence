@@ -1,32 +1,3 @@
-"""Tests for the Explorador de Eventos filter panel:
-  - resolve_last_downloaded_date: pure calculation, no Streamlit runtime.
-  - Everything else: driven through streamlit.testing.v1.AppTest against the
-    sidebar_filters_harness.py script.
-
-IMPORTANT caveat about what AppTest can and can't prove here: AppTest only
-ever re-runs the *same* script — it has no notion of a multi-page app, so it
-cannot exercise an actual page-to-page round trip. Two real bugs this
-component had to be fixed for only reproduced against a genuine two-page
-trip / DOM inspection in a live browser (manual Playwright runs against
-`streamlit run app.py`, not AppTest):
-  1. Streamlit prunes a widget's own `key=` from session_state the moment
-     that widget isn't instantiated in a run — which a real page switch
-     always causes, but a same-page rerun never does.
-  2. Some widgets (st.text_input in particular) don't visually refresh from
-     a new value= while their key stays the same, even once the underlying
-     session_state is genuinely updated — confirmed by reading the DOM
-     after a full page reload, which showed the correct reset value even
-     while the un-reloaded page still displayed the stale one.
-These tests instead verify what AppTest *can* prove: widgets read from and
-write to the correct *durable* session_state keys (never the disposable
-per-widget keys — see _widget_key in sidebar_filters.py), defaults are
-seeded only once, and "Limpiar filtros" resets every durable key plus bumps
-the reset counter. That, plus the fact that _PAGE_KEY (a plain, non-widget
-session_state entry) already reliably survived page switches before this
-feature touched anything, is what the durable-key design in
-sidebar_filters.py relies on for actual cross-page persistence — verified
-end-to-end with a real browser, not by this file.
-"""
 from datetime import date
 from pathlib import Path
 
@@ -45,8 +16,6 @@ def _run() -> AppTest:
 
 
 def _w(at: AppTest, state_key: str) -> str:
-    """The AppTest widget locator key for a given durable state key, at the
-    session's current reset counter (see sidebar_filters._widget_key)."""
     return _widget_key(state_key, at.session_state[RESET_COUNTER_KEY])
 
 
@@ -146,8 +115,6 @@ def test_switching_to_range_mode_reveals_range_input_and_persists():
 
 
 def test_range_mode_defaults_to_the_last_day_not_the_full_history():
-    """No default span like 2024-01-01 -> 2026-08-25 — the range collapses
-    to the same last-downloaded day until the user changes it."""
     at = _run()
     at.radio(key=_w(at, "explorer_date_mode")).set_value("Rango")
     at.run()
@@ -159,8 +126,6 @@ def test_range_mode_defaults_to_the_last_day_not_the_full_history():
 
 
 def test_clear_filters_bumps_the_reset_counter():
-    """This is what forces every widget to remount so the reset is visible
-    on screen, not just correct in session_state (see module docstring)."""
     at = _run()
     counter_before = at.session_state[RESET_COUNTER_KEY]
     at.button[0].click().run()

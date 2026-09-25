@@ -1,7 +1,3 @@
-"""Renders the KPI row on the executive summary as stat tiles (label + value +
-caption) — see dataviz skill: a handful of headline numbers is a KPI row of
-stat tiles, not a chart.
-"""
 from typing import Dict, List
 
 import streamlit as st

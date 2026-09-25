@@ -1,10 +1,3 @@
-"""Charts for the Resumen Ejecutivo page.
-
-Category breakdown and daily evolution are identity encodings (EVENT vs
-CONTEXT), so they always use the same two fixed categorical slots — never
-reassigned based on which category has more rows. The score distribution is a
-single-series magnitude, so it uses the one-hue sequential blue instead.
-"""
 import pandas as pd
 import plotly.graph_objects as go
 
@@ -16,7 +9,6 @@ _CATEGORY_LABELS = {"EVENT": "EVENT", "CONTEXT": "CONTEXT"}
 
 
 def category_breakdown_chart(df: pd.DataFrame) -> go.Figure:
-    """Horizontal bar: filings by category. Axis labels carry identity, so no legend."""
     df = df.sort_values("count", ascending=True)
     colors = [_CATEGORY_COLORS.get(cat, THEME["text_muted"]) for cat in df["filing_category"]]
     fig = go.Figure(
@@ -45,7 +37,6 @@ def category_breakdown_chart(df: pd.DataFrame) -> go.Figure:
 
 
 def daily_evolution_chart(df: pd.DataFrame) -> go.Figure:
-    """Line chart: EVENT vs CONTEXT filings ingested per day. 2 series -> legend + direct color."""
     fig = go.Figure()
     if df.empty:
         fig.update_layout(height=280)
@@ -73,7 +64,6 @@ def daily_evolution_chart(df: pd.DataFrame) -> go.Figure:
 
 
 def score_distribution_chart(df: pd.DataFrame) -> go.Figure:
-    """Histogram: distribution of importance_score. Single series -> one hue, no legend."""
     fig = go.Figure()
     if df.empty:
         fig.update_layout(height=280)

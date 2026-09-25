@@ -1,4 +1,3 @@
-"""Estadísticas — aggregate analytical charts over all EVENT filings."""
 import streamlit as st
 
 from charts.overview_charts import category_breakdown_chart, score_distribution_chart

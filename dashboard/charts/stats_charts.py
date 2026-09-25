@@ -1,11 +1,3 @@
-"""Charts for the Estadísticas page.
-
-Form-type and top-company breakdowns are magnitude/ranking questions (how
-many, low to high) rather than identity questions, so — per the dataviz
-skill — they use a single sequential hue instead of one categorical color
-per bar; coloring 15 form types or 15 companies individually would just
-spend the identity channel restating what the bar length already shows.
-"""
 import pandas as pd
 import plotly.graph_objects as go
 
@@ -14,7 +6,6 @@ from charts.theme import themed_figure
 
 
 def form_type_chart(df: pd.DataFrame) -> go.Figure:
-    """Horizontal bar: EVENT filings by form_type, ranked. Single hue — a ranking, not an identity chart."""
     fig = go.Figure(
         go.Bar(
             x=df["count"],
@@ -41,7 +32,6 @@ def form_type_chart(df: pd.DataFrame) -> go.Figure:
 
 
 def monthly_evolution_chart(df: pd.DataFrame) -> go.Figure:
-    """Line chart: EVENT filings per month. Single series -> one hue, no legend."""
     fig = go.Figure()
     if df.empty:
         fig.update_layout(height=300)
@@ -68,7 +58,6 @@ def monthly_evolution_chart(df: pd.DataFrame) -> go.Figure:
 
 
 def top_companies_chart(df: pd.DataFrame) -> go.Figure:
-    """Horizontal bar: companies with the most EVENT filings, ranked. Single hue."""
     df = df.sort_values("count", ascending=True)
     fig = go.Figure(
         go.Bar(

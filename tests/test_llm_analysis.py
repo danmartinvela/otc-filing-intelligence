@@ -132,7 +132,6 @@ def test_parse_llm_response_strips_untagged_fence():
 
 
 def test_parse_llm_response_still_handles_unfenced_json():
-    """Most providers return raw JSON — the fix must not regress that path."""
     raw = '{"primary_event_type": "BANKRUPTCY_DISTRESS"}'
     parsed = parse_llm_response(raw)
     assert parsed["primary_event_type"] == "BANKRUPTCY_DISTRESS"
@@ -280,7 +279,6 @@ def test_insert_llm_filing_analysis_and_read_back(tmp_path):
 
 
 def test_llm_filing_analysis_queryable_by_next_step_and_importance(tmp_path):
-    """New columns must be plain SQL-queryable, not just accessible via get_llm_filing_analysis."""
     db_path = tmp_path / "test.db"
     init_db(db_path)
     insert_llm_filing_analysis(
@@ -330,8 +328,6 @@ def test_get_llm_filing_analysis_not_found_returns_none(tmp_path):
 
 
 def test_init_db_migrates_old_llm_filing_analysis_table(tmp_path):
-    """Upgrading a pre-market_impact/next_step/key_entities DB adds those columns
-    without losing existing rows."""
     db_path = tmp_path / "test.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -380,7 +376,6 @@ def test_init_db_migrates_old_llm_filing_analysis_table(tmp_path):
 
 
 def test_init_llm_filing_analysis_table_migrates_directly(tmp_path):
-    """init_llm_filing_analysis_table alone (not just init_db) must also migrate."""
     db_path = tmp_path / "test.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -435,9 +430,6 @@ def test_get_event_filings_needing_llm_analysis_respects_limit(tmp_path):
 
 
 def test_get_event_filings_needing_llm_analysis_has_no_document_snapshots_dependency(tmp_path):
-    """Document Snapshots was removed entirely — the LLM selection query
-    must feed off filings.clean_text alone, with no join or column tying it
-    to a filing_snapshots table (which no longer even exists for a fresh DB)."""
     db_path = tmp_path / "test.db"
     init_db(db_path)
     insert_filings([_make_filing("event.txt", clean_text="Item 2.01 details.")], db_path)
@@ -504,8 +496,6 @@ def test_run_first_pass_counts_errors_without_raising(mock_client_cls, tmp_path,
 
 
 def _http_error_response(status_code, retry_after=None):
-    """A mock requests.Response whose raise_for_status() raises an HTTPError
-    carrying that status code — like the real requests library does."""
     response = MagicMock()
     response.status_code = status_code
     response.headers = {"Retry-After": retry_after} if retry_after else {}
@@ -549,7 +539,6 @@ def test_chat_completion_honors_retry_after_header(mock_post, mock_sleep):
 @patch("src.llm_analysis.client.time.sleep")
 @patch("src.llm_analysis.client.requests.post")
 def test_chat_completion_retry_after_header_is_capped(mock_post, mock_sleep):
-    """A provider asking for an absurd Retry-After must not stall the batch."""
     mock_post.side_effect = [_http_error_response(429, retry_after="9999"), _success_response()]
     client = LLMClient(api_key="k", base_url="https://api.example.com/v1", model="m")
 
@@ -621,9 +610,6 @@ def test_chat_completion_gives_up_after_max_retries(mock_post, mock_sleep):
 
 
 def _install_real_db(monkeypatch, db_path):
-    """Point first_pass's module-level DB calls at a throwaway tmp_path DB
-    instead of the real data/filings.db, while keeping the real SQL (no
-    behavior is mocked away, only which file it reads/writes)."""
     monkeypatch.setattr(
         "src.llm_analysis.first_pass.get_event_filings_needing_llm_analysis",
         lambda **kwargs: get_event_filings_needing_llm_analysis(db_path=db_path, **kwargs),
@@ -641,9 +627,6 @@ def test_run_first_pass_rejects_invalid_worker_count():
 
 @patch("src.llm_analysis.first_pass.LLMClient")
 def test_run_first_pass_runs_calls_concurrently(mock_client_cls, tmp_path, monkeypatch):
-    """4 filings whose LLM call each sleeps 0.2s, run with workers=4, must
-    finish in well under 4 * 0.2s — proving the calls actually overlap
-    instead of the old one-at-a-time loop."""
     db_path = tmp_path / "test.db"
     init_db(db_path)
     insert_filings([_make_filing(f"event{i}.txt") for i in range(4)], db_path)
@@ -704,9 +687,6 @@ def test_run_first_pass_never_exceeds_configured_workers(mock_client_cls, tmp_pa
 
 @patch("src.llm_analysis.first_pass.LLMClient")
 def test_run_first_pass_writes_db_only_from_calling_thread(mock_client_cls, tmp_path, monkeypatch):
-    """SQLite writes must be serialized on the thread that called
-    run_first_pass, never on a worker thread — this is what avoids
-    'database is locked' without needing an explicit lock."""
     db_path = tmp_path / "test.db"
     init_db(db_path)
     insert_filings([_make_filing(f"event{i}.txt") for i in range(6)], db_path)
@@ -799,8 +779,6 @@ def test_run_first_pass_progress_info_includes_timing_and_workers(mock_client_cl
 
 @patch("src.llm_analysis.first_pass.LLMClient")
 def test_run_first_pass_progress_info_present_on_failure_too(mock_client_cls, tmp_path, monkeypatch):
-    """Timing/workers info must be available even for a failed call, since
-    the CLI/dashboard progress line reports ETA and error count together."""
     db_path = tmp_path / "test.db"
     init_db(db_path)
     insert_filings([_make_filing("event.txt")], db_path)

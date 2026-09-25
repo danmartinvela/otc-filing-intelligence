@@ -1,11 +1,3 @@
-"""Entry point: page config, global CSS, and navigation shell.
-
-Run with: streamlit run dashboard/app.py
-Read-only, with one deliberate exception: screens/process_filings.py is the
-only page that writes to data/filings.db, by calling the existing backend
-pipeline (src/pipeline.py) — same as the CLI. Every other page only ever
-SELECTs (see database/connection.py).
-"""
 import sys
 
 import streamlit as st

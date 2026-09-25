@@ -1,11 +1,3 @@
-"""Classifies SEC form types so the pipeline knows what to do with them.
-
-EVENT filings represent corporate events that may move a company's value —
-they get the full Document Intelligence treatment and are eventually sent
-to an LLM. CONTEXT filings are stored but never analyzed on their own; they
-only serve as historical background when an EVENT filing needs it. Anything
-else is IGNORED: not stored for analysis, not classified further.
-"""
 from typing import Optional
 
 EVENT = "EVENT"
@@ -39,7 +31,6 @@ CONTEXT_FORMS = {
 
 
 def get_filing_category(form_type: Optional[str]) -> str:
-    """Return EVENT, CONTEXT, or IGNORED for a given SEC form type."""
     normalized = (form_type or "").strip().upper()
     if normalized in EVENT_FORMS:
         return EVENT

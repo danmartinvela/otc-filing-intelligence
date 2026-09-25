@@ -142,11 +142,6 @@ def _run_import_tickers(user_agent: str) -> None:
 
 
 def _daily_pipeline_cli_progress(data: dict) -> None:
-    """Reproduces the log lines _run_daily_pipeline used to print inline,
-    now driven by pipeline.run_daily_pipeline's on_progress checkpoints so
-    the CLI output stays in the same order as before (fetch -> store ->
-    per-item download), even though the loop itself now lives in pipeline.py.
-    """
     stage = data["stage"]
     if stage == "index" and data["total_found"] > 0:
         logger.info(f"Storing {data['total_found']} filings in the database...")
@@ -226,13 +221,6 @@ def _run_enrich_filings_with_otc() -> None:
 
 
 def _make_llm_cli_progress():
-    """One consolidated log line per completed filing, in the format asked
-    for (Analizados/Workers/Velocidad/ETA/Errores) — consistent with how
-    _daily_pipeline_cli_progress reports per-item progress elsewhere in this
-    CLI, rather than a redrawn multi-line block this CLI has no precedent for.
-    Errors is a running total across the whole batch, tracked in this
-    closure since on_progress only reports one item at a time.
-    """
     state = {"errors": 0}
 
     def _progress(data: dict) -> None:

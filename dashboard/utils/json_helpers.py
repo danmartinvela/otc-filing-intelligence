@@ -1,7 +1,3 @@
-"""Safe decoding of the *_json columns stored in llm_filing_analysis —
-malformed or missing JSON never raises, it just yields an empty list, since
-not every filing's analysis populates every optional field.
-"""
 import json
 from typing import List, Optional
 

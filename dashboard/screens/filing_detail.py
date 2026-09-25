@@ -1,17 +1,3 @@
-"""Detalle del Filing — full record for one EVENT filing.
-
-Reached either by selecting a row in the Explorador (which sets
-st.session_state["selected_filing"] and switches here — opens directly,
-no re-search needed) or by searching on this page directly.
-
-The search is strictly on-demand: nothing is queried and nothing is loaded
-into memory until the user types something (see _render_search). There is
-no upfront list of filings, no dropdown of every filing, and no Python-side
-filtering over a pre-fetched list — every keystroke that changes the term
-runs one indexed SQLite query for up to _RESULTS_LIMIT + 1 rows (the lean
-columns only; clean_text/raw_text/raw_response are never touched by search,
-only by get_filing_detail once a specific filename is picked).
-"""
 import streamlit as st
 
 from components.data_table import render_search_results_table

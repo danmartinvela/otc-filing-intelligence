@@ -1,19 +1,3 @@
-"""Procesar filings — triggers the existing backend pipeline (src/pipeline.py).
-
-Two independent blocks, each with its own state and its own button:
-  A. Ingesta SEC — fetch/store/download for one date (as before).
-  B. Análisis mediante LLM — explicit filter selection (period, form types,
-     status, limit, order) with a preview (counts + table) before spending
-     any LLM credits. The filters go straight to src.database.db /
-     src.llm_analysis.first_pass — the same functions the CLI's
-     --llm-first-pass uses — so nothing here re-implements selection logic,
-     and the two blocks never share state (choosing a date in A never
-     affects what B sends to the model).
-
-This is the one page in the dashboard that writes to filings.db, and only
-indirectly: it calls the same pipeline functions the CLI (src/main.py) calls.
-Every other page stays strictly read-only.
-"""
 import html
 import time
 from datetime import date
@@ -185,8 +169,6 @@ def _render_ingest_section() -> None:
 
 
 def _resolve_period() -> Tuple[Optional[str], Optional[str], str]:
-    """Returns (date_from, date_to, display_label) — dates in YYYYMMDD. Default
-    (first radio option, no persisted value yet) is "Día concreto"."""
     period = st.radio(
         "Periodo", ["Día concreto", "Rango de fechas"],
         key="llm_period", horizontal=True,
@@ -217,8 +199,6 @@ def _render_llm_preview(
     date_from: Optional[str], date_to: Optional[str], form_types: Optional[List[str]],
     status: str, order: str,
 ) -> int:
-    """Renders the 'before you spend money' preview. Returns how many filings
-    would actually be sent to the LLM with the current filters."""
     counts = get_llm_selection_counts(date_from=date_from, date_to=date_to, form_types=form_types)
     matching = _matching_count_for_status(counts, status)
     to_send = matching if limit is None else min(matching, limit)
@@ -269,11 +249,6 @@ _LLM_PROGRESS_HEADER = (
 
 
 def _llm_progress_row_html(data: Dict) -> str:
-    """One fixed-column row (10% / 40% / 40% / 10%) for the live LLM
-    progress table — see .llm-progress-* in main.css. Every value is
-    escaped and clipped to its own column (ellipsis + a title tooltip for
-    the full text), so a long company name or event type can never push a
-    later column out of alignment."""
     done, total = data["done"], data["total"]
     progress_txt = f"{'✓' if data['ok'] else '✗'} {done}/{total}"
 
