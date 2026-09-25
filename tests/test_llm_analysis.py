@@ -120,16 +120,6 @@ def test_parse_llm_response_none_is_a_parse_error_not_a_crash():
     assert parsed["primary_event_type"] == PARSE_ERROR
 
 
-# ── parse_llm_response: markdown-fenced JSON ─────────────────────────────────
-#
-# Observed for real from google/gemini-2.5-flash-lite via OpenRouter: it
-# wraps its JSON reply in a ```json ... ``` code fence even though the
-# prompt asks for raw JSON. A string starting with a backtick fails
-# json.loads with the exact same "Expecting value: line 1 column 1 (char 0)"
-# error as an empty string — without stripping the fence, every response
-# from a model that does this gets misreported as PARSE_ERROR.
-
-
 def test_parse_llm_response_strips_json_language_tagged_fence():
     raw = '```json\n{"primary_event_type": "ROUTINE", "importance_score": 10}\n```'
     parsed = parse_llm_response(raw)
@@ -154,9 +144,6 @@ def test_parse_llm_response_fenced_but_invalid_json_is_still_a_parse_error():
     raw = '```json\nnot actually json\n```'
     parsed = parse_llm_response(raw)
     assert parsed["primary_event_type"] == PARSE_ERROR
-
-
-# ── build_filing_input ───────────────────────────────────────────────────────
 
 
 def test_build_filing_input_truncates_clean_text():
@@ -190,9 +177,6 @@ def test_build_filing_input_handles_missing_json_fields():
     filing_input = build_filing_input(filing)
     assert filing_input["items"] == []
     assert filing_input["keywords"] == []
-
-
-# ── LLMClient config ─────────────────────────────────────────────────────────
 
 
 def test_llm_client_raises_when_env_vars_missing(monkeypatch):
@@ -235,9 +219,6 @@ def test_llm_client_chat_completion_parses_response(mock_post):
     called_payload = mock_post.call_args.kwargs["json"]
     assert called_payload["model"] == "m"
     assert called_payload["messages"][0] == {"role": "system", "content": "system prompt"}
-
-
-# ── SQLite persistence ────────────────────────────────────────────────────────
 
 
 def _make_filing(filename: str, clean_text: str = "text", form_type: str = "8-K") -> Filing:
@@ -350,9 +331,6 @@ def test_get_llm_filing_analysis_not_found_returns_none(tmp_path):
     assert get_llm_filing_analysis("does/not/exist.txt", db_path) is None
 
 
-# ── schema migration ──────────────────────────────────────────────────────────
-
-
 def test_init_db_migrates_old_llm_filing_analysis_table(tmp_path):
     """Upgrading a pre-market_impact/next_step/key_entities DB adds those columns
     without losing existing rows."""
@@ -396,7 +374,6 @@ def test_init_db_migrates_old_llm_filing_analysis_table(tmp_path):
     assert "next_step" in cols
     assert "key_entities_json" in cols
 
-    # Existing row must survive the migration untouched, with NULL new columns.
     stored = get_llm_filing_analysis("old.txt", db_path)
     assert stored["primary_event_type"] == "ROUTINE"
     assert stored["market_impact"] is None
@@ -478,9 +455,6 @@ def test_get_event_filings_needing_llm_analysis_has_no_document_snapshots_depend
     assert "keywords_json" not in pending[0]
 
 
-# ── run_first_pass orchestration ─────────────────────────────────────────────
-
-
 @patch("src.llm_analysis.first_pass.LLMClient")
 def test_run_first_pass_processes_pending_filings_and_saves_results(mock_client_cls, tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
@@ -529,9 +503,6 @@ def test_run_first_pass_counts_errors_without_raising(mock_client_cls, tmp_path,
     assert processed == 0
     assert errors == 1
     assert get_llm_filing_analysis("event.txt", db_path) is None
-
-
-# ── LLMClient retry/backoff ──────────────────────────────────────────────────
 
 
 def _http_error_response(status_code, retry_after=None):
@@ -649,9 +620,6 @@ def test_chat_completion_gives_up_after_max_retries(mock_post, mock_sleep):
         client.chat_completion("sp", "um")
 
     assert mock_post.call_count == 4  # 1 initial attempt + 3 retries
-
-
-# ── run_first_pass concurrency ───────────────────────────────────────────────
 
 
 def _install_real_db(monkeypatch, db_path):

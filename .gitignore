@@ -12,6 +12,7 @@ __pycache__/
 
 # Database
 *.db
+/data/
 
 # Pytest
 .pytest_cache/
@@ -22,3 +23,4 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+

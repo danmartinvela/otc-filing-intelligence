@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(.venv/bin/python -c ' *)",
-      "Bash(.venv/bin/python -m pytest tests/ -q)"
+      "Bash(.venv/bin/python -m pytest tests/ -q)",
+      "Bash(sqlite3 \"file:data/filings.db?mode=ro&immutable=1\" \"SELECT COUNT\\(*\\) FROM filings;\")",
+      "Bash(sqlite3 \"file:data/filings.db?mode=ro&immutable=1\" \"SELECT MIN\\(date_filed\\), MAX\\(date_filed\\) FROM filings;\")",
+      "Bash(sqlite3 \"file:data/filings.db?mode=ro&immutable=1\" \"SELECT DISTINCT date_filed FROM filings ORDER BY RANDOM\\(\\) LIMIT 5;\")",
+      "Bash(sqlite3 -header -column 'file:data/filings.db?mode=ro&immutable=1' ' *)"
     ]
   }
 }

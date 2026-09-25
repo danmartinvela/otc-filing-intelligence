@@ -33,9 +33,6 @@ def _write_csv(tmp_path: Path, content: str) -> Path:
     return p
 
 
-# ── _to_float ─────────────────────────────────────────────────────────────────
-
-
 def test_to_float_plain():
     assert _to_float("1.23") == pytest.approx(1.23)
 
@@ -60,9 +57,6 @@ def test_to_float_non_numeric():
     assert _to_float("N/A") is None
 
 
-# ── _to_int ───────────────────────────────────────────────────────────────────
-
-
 def test_to_int_plain():
     assert _to_int("1234567") == 1234567
 
@@ -77,9 +71,6 @@ def test_to_int_empty():
 
 def test_to_int_non_numeric():
     assert _to_int("N/A") is None
-
-
-# ── _parse_row ────────────────────────────────────────────────────────────────
 
 
 def test_parse_row_normalizes_symbol():
@@ -110,9 +101,6 @@ def test_parse_row_empty_strings_become_none():
     assert result["volume"] is None
     assert result["sec_type"] is None
     assert result["country"] is None
-
-
-# ── import_otc_screener_csv ───────────────────────────────────────────────────
 
 
 def test_import_csv_inserts_rows(tmp_path):
@@ -168,9 +156,6 @@ def test_import_csv_null_volume_for_empty(tmp_path):
     assert row["volume"] is None
 
 
-# ── upsert_otc_securities ─────────────────────────────────────────────────────
-
-
 def test_upsert_otc_securities_returns_counts(tmp_path):
     db_path = tmp_path / "test.db"
     init_db(db_path)
@@ -183,9 +168,6 @@ def test_upsert_otc_securities_returns_counts(tmp_path):
     assert inserted == 1 and updated == 0
     inserted2, updated2 = upsert_otc_securities(rows, db_path)
     assert inserted2 == 0 and updated2 == 1
-
-
-# ── enrich_filings_with_otc ───────────────────────────────────────────────────
 
 
 def _make_filing(cik: str, ticker: str, filename: str) -> Filing:
